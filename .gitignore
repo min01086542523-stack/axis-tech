@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+mes.db
+mes.db-journal
+config.json
+report_state.json
+.hr_key
+login_error.log
+*.xlsx
+*급여명세서*
+국세청신고/
+서식출력/
