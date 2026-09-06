@@ -47,22 +47,27 @@ def pack_header_logo(header, *, width: int = 58, height: int = 59) -> None:
     pack_logo(header, width=width, height=height, side="right", padx=(10, 0), pady=(0, 2))
 
 
-def ensure_watermark_file() -> Path:
+def ensure_watermark_file(*, opacity: float = 0.28) -> Path:
     """흰 서류용으로 알파를 낮춘 흐린 로고를 만든다."""
     from PIL import Image
 
-    src_path = LOGO_LIGHT if LOGO_LIGHT.exists() else LOGO_DARK
+    key = int(round(max(0.01, min(1.0, opacity)) * 100))
+    out = LOGO_WATERMARK if key == 28 else ASSETS_DIR / f"axis_logo_watermark_{key}.png"
+    src_path = LOGO_DARK if LOGO_DARK.exists() else LOGO_LIGHT
+    if key == 28:
+        src_path = LOGO_LIGHT if LOGO_LIGHT.exists() else LOGO_DARK
     src = Image.open(src_path).convert("RGBA")
     pixels = src.load()
     width, height = src.size
+    fade = max(0.01, min(1.0, opacity))
     for y in range(height):
         for x in range(width):
             _red, _green, _blue, alpha = pixels[x, y]
             if alpha == 0:
                 continue
-            pixels[x, y] = (160, 160, 160, max(12, int(alpha * 0.28)))
-    src.save(LOGO_WATERMARK, "PNG")
-    return LOGO_WATERMARK
+            pixels[x, y] = (160, 160, 160, max(8, int(alpha * fade)))
+    src.save(out, "PNG")
+    return out
 
 
 def _col_px(ws, col_idx: int, last_col: int) -> float:

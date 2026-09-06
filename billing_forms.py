@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.worksheet import Worksheet
 
 import billing_database as billing
+import brand
 
 HEADER_FILL = PatternFill("solid", fgColor="D9D9D9")
 LABEL_FILL = PatternFill("solid", fgColor="EFEFEF")
@@ -26,6 +28,7 @@ BODY_FONT = Font(name="Malgun Gothic", size=9)
 BOLD_FONT = Font(bold=True, name="Malgun Gothic", size=9)
 MONEY_FONT = Font(bold=True, name="Malgun Gothic", size=12)
 SMALL_FONT = Font(name="Malgun Gothic", size=8, color="555555")
+ADDR_FONT = Font(name="Malgun Gothic", size=10, color="555555")
 THIN_SIDE = Side(style="thin", color="000000")
 MED_SIDE = Side(style="medium", color="000000")
 THIN = Border(left=THIN_SIDE, right=THIN_SIDE, top=THIN_SIDE, bottom=THIN_SIDE)
@@ -164,6 +167,182 @@ def _outline(ws: Worksheet, r1: int, c1: int, r2: int, c2: int) -> None:
             top = MED_SIDE if row == r1 else THIN_SIDE
             bottom = MED_SIDE if row == r2 else THIN_SIDE
             cell.border = Border(left=left, right=right, top=top, bottom=bottom)
+
+
+def _estimate_text_px(text: str, size_pt: float) -> float:
+    try:
+        from PIL import ImageFont
+
+        px = max(8, int(round(size_pt * 96.0 / 72.0)))
+        for face in (
+            r"C:\Windows\Fonts\malgunbd.ttf",
+            r"C:\Windows\Fonts\malgun.ttf",
+            "malgunbd.ttf",
+            "malgun.ttf",
+        ):
+            try:
+                font = ImageFont.truetype(face, px)
+                bbox = font.getbbox(text)
+                return float(bbox[2] - bbox[0]) + 3.0
+            except OSError:
+                continue
+    except Exception:
+        pass
+    px = size_pt * 96.0 / 72.0
+    width = 3.0
+    for ch in text:
+        if ch == " ":
+            width += px * 0.35
+        elif ord(ch) > 127:
+            width += px * 1.05
+        else:
+            width += px * 0.58
+    return width
+
+
+def _clear_tb_border(ws: Worksheet, row: int, c1: int, c2: int) -> None:
+    for col in range(c1, c2 + 1):
+        cell = ws.cell(row=row, column=col)
+        border = cell.border
+        cell.border = Border(left=border.left, right=border.right)
+
+
+def _clear_bottom(ws: Worksheet, row: int, c1: int, c2: int) -> None:
+    for col in range(c1, c2 + 1):
+        cell = ws.cell(row=row, column=col)
+        border = cell.border
+        cell.border = Border(left=border.left, right=border.right, top=border.top)
+
+
+def _clear_top(ws: Worksheet, row: int, c1: int, c2: int) -> None:
+    for col in range(c1, c2 + 1):
+        cell = ws.cell(row=row, column=col)
+        border = cell.border
+        cell.border = Border(left=border.left, right=border.right, bottom=border.bottom)
+
+
+CM_PX = 96.0 / 2.54
+PT_PER_CM = 72.0 / 2.54
+OUTPUT_DIR = Path(__file__).resolve().parent / "서식출력"
+
+
+def default_export_path(label: str, who: str = "") -> Path:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    safe = "".join(ch for ch in (who or "전체") if ch not in r'\/:*?"<>|')
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return OUTPUT_DIR / f"{label}_{safe}_{stamp}.xlsx"
+
+
+def open_exported(path: str | Path) -> None:
+    target = Path(path)
+    if not target.exists():
+        raise FileNotFoundError(str(target))
+    os.startfile(os.path.normpath(str(target)))
+
+
+def _logo_image(*, icon_only: bool = True):
+    from io import BytesIO
+
+    from openpyxl.drawing.image import Image as XLImage
+    from PIL import Image as PILImage
+
+    path = brand.LOGO_DARK if brand.LOGO_DARK.exists() else brand.LOGO_LIGHT
+    if not path.exists():
+        return None
+    src = PILImage.open(path).convert("RGBA")
+    if icon_only:
+        width, height = src.size
+        src = src.crop((0, 0, width, int(height * 0.72)))
+    buf = BytesIO()
+    src.save(buf, format="PNG")
+    buf.seek(0)
+    return XLImage(buf)
+
+
+def _place_logo_xy(
+    ws: Worksheet,
+    x: float,
+    y: float,
+    *,
+    height_px: float,
+    last_col: int,
+    icon_only: bool = True,
+) -> None:
+    img = _logo_image(icon_only=icon_only)
+    if img is None:
+        return
+    ratio = height_px / float(img.height or 1)
+    width_px = max(1, int((img.width or height_px) * ratio))
+    img.width = width_px
+    img.height = int(height_px)
+    img.anchor = brand._anchor_at(ws, x, y, width_px, height_px, last_col)
+    ws.add_image(img)
+
+
+def _place_name_logo(
+    ws: Worksheet,
+    row: int,
+    *,
+    text: str,
+    start_col: int = 1,
+    end_col: int | None = None,
+    font_size: float = 14,
+    last_col: int = 8,
+    offset_cm: float = 0.0,
+    height_px: float | None = None,
+    align: str = "left",
+) -> None:
+    if not text:
+        return
+    size = height_px if height_px is not None else max(14, int(round(font_size * 96.0 / 72.0)))
+    pad = (offset_cm if offset_cm else 2.0) * CM_PX
+    end_col = end_col or start_col
+    text_w = _estimate_text_px(text, font_size)
+    left = sum(brand._col_px(ws, col, last_col) for col in range(1, start_col))
+    box_w = sum(brand._col_px(ws, col, last_col) for col in range(start_col, end_col + 1))
+    if align == "center":
+        text_end = left + max(0.0, (box_w - text_w) / 2.0) + text_w
+    elif align == "right":
+        text_end = left + box_w
+    else:
+        text_end = left + text_w
+    x = text_end + pad
+    y = sum(brand._row_h_px(ws, r) for r in range(1, row))
+    y += max(0.0, (brand._row_h_px(ws, row) - size) / 2)
+    _place_logo_xy(ws, x, y, height_px=size, last_col=last_col, icon_only=True)
+
+
+def _place_title_logo(ws: Worksheet, title_row: int, last_col: int, *, height_px: float = 38) -> None:
+    sheet_w = sum(brand._col_px(ws, col, last_col) for col in range(1, last_col + 1))
+    img = _logo_image(icon_only=True)
+    if img is None:
+        return
+    ratio = height_px / float(img.height or 1)
+    width_px = max(1, int((img.width or height_px) * ratio))
+    title_h = brand._row_h_px(ws, title_row) + brand._row_h_px(ws, title_row + 1)
+    x = max(0.0, sheet_w - width_px - 8)
+    y = sum(brand._row_h_px(ws, r) for r in range(1, title_row))
+    y += max(0.0, (title_h - height_px) / 2)
+    _place_logo_xy(ws, x, y, height_px=height_px, last_col=last_col, icon_only=True)
+
+
+def _place_watermark(ws: Worksheet, r1: int, r2: int, last_col: int, *, opacity: float = 0.15) -> None:
+    from openpyxl.drawing.image import Image as XLImage
+
+    path = brand.ensure_watermark_file(opacity=opacity)
+    img = XLImage(str(path))
+    width_px = 210
+    ratio = width_px / float(img.width or 1)
+    height_px = max(1, int((img.height or width_px) * ratio))
+    img.width = width_px
+    img.height = height_px
+    sheet_w = sum(brand._col_px(ws, col, last_col) for col in range(1, last_col + 1))
+    sheet_h = sum(brand._row_h_px(ws, row) for row in range(r1, r2 + 1))
+    x = max(0.0, (sheet_w - width_px) / 2)
+    y = sum(brand._row_h_px(ws, row) for row in range(1, r1))
+    y += max(0.0, (sheet_h - height_px) / 2)
+    img.anchor = brand._anchor_at(ws, x, y, width_px, height_px, last_col)
+    ws.add_image(img)
 
 
 def _parse_date(value: str) -> datetime:
@@ -431,7 +610,11 @@ def export_statement(path: str | Path, rows: list, customer: str, statement_date
         buyer=buyer,
         rows=rows,
     )
-    _widths(ws, {1: 8, 2: 11, 3: 18, 4: 14, 5: 10, 6: 10, 7: 13, 8: 12, 9: 14})
+    _widths(ws, {1: 8, 2: 11, 3: 13, 4: 14, 5: 10, 6: 8, 7: 13, 8: 23, 9: 11})
+    _place_watermark(ws, 1, last1, LAST_COL)
+    _place_watermark(ws, cut + 1, last2, LAST_COL)
+    _place_title_logo(ws, 2, LAST_COL)
+    _place_title_logo(ws, cut + 2, LAST_COL)
     ws.print_area = f"A1:I{last2}"
     ws.page_setup.fitToHeight = 1
     wb.save(path)
@@ -469,7 +652,7 @@ def export_loss_claim(path: str | Path, row) -> Path:
     _paint(ws, 1, 6, 1, 6, value="담당", font=BOLD_FONT, fill=HEADER_FILL)
     _paint(ws, 1, 7, 1, 7, value="팀장", font=BOLD_FONT, fill=HEADER_FILL)
     _paint(ws, 1, 8, 1, 8, value="대표", font=BOLD_FONT, fill=HEADER_FILL)
-    ws.row_dimensions[1].height = 20
+    ws.row_dimensions[1].height = 20 + 0.5 * PT_PER_CM
 
     letterhead = "  ·  ".join(
         p
@@ -480,11 +663,11 @@ def export_loss_claim(path: str | Path, row) -> Path:
         )
         if p
     )
-    _paint(ws, 2, 1, 3, 5, value=letterhead, font=SMALL_FONT, align=LEFT)
+    _paint(ws, 2, 1, 3, 5, value=letterhead, font=ADDR_FONT, align=LEFT)
     _paint(ws, 2, 6, 3, 6, value="", fill=STAMP_FILL)
     _paint(ws, 2, 7, 3, 7, value="", fill=STAMP_FILL)
     _paint(ws, 2, 8, 3, 8, value="(인)", font=SMALL_FONT, fill=STAMP_FILL)
-    ws.row_dimensions[2].height = 20
+    ws.row_dimensions[2].height = 20 + 0.5 * PT_PER_CM
     ws.row_dimensions[3].height = 22
 
     _paint(ws, 4, 1, 5, c, value="업 무 협 조 전", font=TITLE_FONT)
@@ -625,8 +808,8 @@ def export_loss_claim(path: str | Path, row) -> Path:
         font=LETTER_FONT,
         align=Alignment(horizontal="left", vertical="top", wrap_text=True),
     )
-    ws.row_dimensions[26].height = 22
-    ws.row_dimensions[27].height = 22
+    ws.row_dimensions[26].height = 28
+    ws.row_dimensions[27].height = 28
 
     _paint(ws, 28, 1, 28, c, value="붙임  1. 손실 산출내역 1부.    끝.", font=LETTER_FONT, align=LEFT)
     ws.row_dimensions[28].height = 20
@@ -636,7 +819,7 @@ def export_loss_claim(path: str | Path, row) -> Path:
     ws.row_dimensions[29].height = 20
     _paint(ws, 30, 1, 30, 5, value=seller_name, font=LETTERHEAD_FONT)
     _paint(ws, 30, 6, 31, c, value="(인)", font=SMALL_FONT, fill=STAMP_FILL)
-    ws.row_dimensions[30].height = 22
+    ws.row_dimensions[30].height = 28
     _paint(ws, 31, 1, 31, 5, value=f"대표이사  {seller_ceo}", font=LETTER_BOLD)
     ws.row_dimensions[31].height = 22
 
@@ -648,12 +831,31 @@ def export_loss_claim(path: str | Path, row) -> Path:
     _paint(ws, 33, 2, 33, 3, value="", fill=WHITE)
     _paint(ws, 33, 4, 33, 5, value="", fill=WHITE)
     _paint(ws, 33, 6, 33, c, value="", fill=STAMP_FILL)
-    ws.row_dimensions[32].height = 18
-    ws.row_dimensions[33].height = 32
+    ws.row_dimensions[32].height = 18 + 0.5 * PT_PER_CM
+    ws.row_dimensions[33].height = 32 + 1 * PT_PER_CM
 
     _outline(ws, 1, 1, 33, c)
     _outline(ws, 17, 1, 20, c)
+    _clear_tb_border(ws, 30, 1, 5)
+    _clear_bottom(ws, 29, 1, 5)
+    _clear_top(ws, 31, 1, 5)
     _widths(ws, {1: 14, 2: 14, 3: 12, 4: 12, 5: 13, 6: 12, 7: 12, 8: 13})
+    _place_watermark(ws, 1, 33, c)
+    _place_name_logo(
+        ws, 1, text=seller_name, start_col=1, end_col=5, font_size=14, last_col=c, offset_cm=2.0, height_px=34
+    )
+    _place_name_logo(
+        ws,
+        30,
+        text=seller_name,
+        start_col=1,
+        end_col=5,
+        font_size=14,
+        last_col=c,
+        offset_cm=2.0,
+        height_px=34,
+        align="center",
+    )
     ws.print_area = "A1:H33"
     wb.save(path)
     return path

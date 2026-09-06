@@ -299,6 +299,23 @@ def open_exported(path: str | Path) -> None:
     os.startfile(os.path.normpath(str(target)))
 
 
+def export_employee_list(path: str | Path | None = None) -> Path:
+    """인사 마스터에 등록된 전 직원을 직원명단 엑셀로 만든다."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    if path is None:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = OUTPUT_DIR / f"직원명단_전체_{stamp}.xlsx"
+    path = Path(path)
+    wb = Workbook()
+    ws = wb.active
+    extra: dict[str, Any] = {}
+    _build_employee_list(ws, None, extra)
+    _center_workbook(wb)
+    brand.stamp_workbook_logos(wb)
+    wb.save(path)
+    return path
+
+
 def _doc_no(code: str, emp_no: str = "") -> str:
     stamp = datetime.now().strftime("%Y%m%d")
     tail = (emp_no or "GEN").replace(" ", "")
@@ -1172,6 +1189,51 @@ def _build_roster(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str, 
     )
     _write_sign_block(ws, last + 4, "담당", 8, left_title="작 성", right_title="확 인")
     _set_widths(ws, {1: 14, 2: 14, 3: 18, 4: 14, 5: 14, 6: 14, 7: 12, 8: 16})
+    return {"count": len(rows)}
+
+
+def _build_employee_list(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str, Any]) -> dict[str, Any]:
+    rows = hr.fetch_employees(active_only=False)
+    co = _company()
+    row = _start_form(
+        ws, f"{co['company_name']} 직원명단", "직원명단",
+        last_col=9, doc_code="EL",
+    )
+    headers = ("사원번호", "성명", "주민등록번호", "입사일자", "퇴사일자", "부서", "직급", "연락처", "상태")
+    head = row
+    for i, heading in enumerate(headers, 1):
+        _cell(ws, row, i, heading, fill=HEADER_FILL, center=True)
+    start = row + 1
+    for r_idx, rec in enumerate(rows, start=start):
+        status = "재직" if rec["is_active"] and not rec["resign_date"] else "퇴직"
+        values = (
+            rec["emp_no"],
+            rec["name"],
+            rec["rrn_masked"],
+            rec["hire_date"],
+            rec["resign_date"] or "",
+            rec["department"],
+            rec["job_title"],
+            rec["phone"],
+            status,
+        )
+        for col, value in enumerate(values, 1):
+            _cell(ws, r_idx, col, value, center=True)
+    last = start + max(len(rows), 1) - 1
+    if not rows:
+        ws.merge_cells(start_row=start, start_column=1, end_row=start, end_column=9)
+        _cell(ws, start, 1, "등록된 사원이 없습니다.", center=True)
+        last = start
+    _outline(ws, head, 1, last, 9)
+    _write_note(
+        ws,
+        last + 2,
+        f"인사 마스터 등록 인원 {len(rows)}명. 사원을 등록·수정하면 이 명단에 자동으로 반영됩니다. "
+        "주민등록번호는 마스킹하여 기재합니다.",
+        9,
+    )
+    _write_sign_block(ws, last + 4, "담당", 9, left_title="작 성", right_title="확 인")
+    _set_widths(ws, {1: 12, 2: 12, 3: 18, 4: 13, 5: 13, 6: 14, 7: 12, 8: 16, 9: 10})
     return {"count": len(rows)}
 
 

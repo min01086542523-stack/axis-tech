@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
@@ -11,6 +11,7 @@ import billing_database as billing
 import billing_forms
 import brand
 import database as db
+import excel_export
 
 EMPTY_PRODUCT = "품목을 선택하세요"
 EMPTY_CUSTOMER = "거래처를 선택하세요"
@@ -105,7 +106,7 @@ class StatementTab(ctk.CTkFrame):
         ctk.CTkButton(buttons, text="삭제", width=90, fg_color="#a33", hover_color="#822", command=self._on_delete).pack(
             side="left", padx=4
         )
-        ctk.CTkButton(buttons, text="명세서 엑셀", width=120, command=self._on_export).pack(side="left", padx=4)
+        ctk.CTkButton(buttons, text="엑셀거래명세서", width=140, command=self._on_export).pack(side="left", padx=4)
         ctk.CTkButton(
             buttons, text="초기화", width=90, fg_color="transparent", border_width=1, command=self._clear
         ).pack(side="left", padx=4)
@@ -317,19 +318,14 @@ class StatementTab(ctk.CTkFrame):
         if not rows:
             messagebox.showwarning("엑셀", "같은 발행일·거래처의 명세 행이 없습니다.", parent=self)
             return
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="거래명세서 저장",
-            defaultextension=".xlsx",
-            initialfile=f"거래명세서_{customer or '전체'}_{date or datetime.now().strftime('%Y%m%d')}.xlsx",
-            filetypes=[("Excel 통합 문서", "*.xlsx")],
-        )
-        if not path:
-            return
-        saved = billing_forms.export_statement(
-            path, rows, customer or rows[0]["customer_name"], date or rows[0]["statement_date"]
-        )
-        messagebox.showinfo("발행", f"저장했습니다.\n{saved}", parent=self)
+        who = customer or rows[0]["customer_name"]
+        when = date or rows[0]["statement_date"]
+        path = billing_forms.default_export_path("거래명세서", f"{who}_{when}")
+        try:
+            saved = billing_forms.export_statement(path, rows, who, when)
+            billing_forms.open_exported(saved)
+        except OSError as exc:
+            messagebox.showwarning("열기", f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}", parent=self)
 
     def _clear(self) -> None:
         self._selected_id = None
@@ -452,8 +448,13 @@ class PartiesTab(ctk.CTkFrame):
             entry = ctk.CTkEntry(company_form)
             entry.grid(row=i, column=1, sticky="ew", padx=(0, 8), pady=4)
             self.company_entries[key] = entry
-        ctk.CTkButton(left, text="당사 정보 저장", width=140, command=self._save_company).pack(
-            anchor="e", padx=12, pady=(0, 12)
+        company_btns = ctk.CTkFrame(left, fg_color="transparent")
+        company_btns.pack(fill="x", padx=12, pady=(0, 12))
+        ctk.CTkButton(company_btns, text="당사 정보 저장", width=140, command=self._save_company).pack(
+            side="left", padx=4
+        )
+        ctk.CTkButton(company_btns, text="엑셀 내보내기", width=130, command=self._on_export).pack(
+            side="left", padx=4
         )
 
         right = ctk.CTkFrame(board, corner_radius=10)
@@ -515,6 +516,24 @@ class PartiesTab(ctk.CTkFrame):
         ctk.CTkButton(
             buttons, text="초기화", width=80, fg_color="transparent", border_width=1, command=self._clear_customer
         ).pack(side="left", padx=4)
+        ctk.CTkButton(buttons, text="엑셀 내보내기", width=120, command=self._on_export).pack(side="left", padx=4)
+
+    def _on_export(self) -> None:
+        company = billing.get_company_profile()
+        company_rows = tuple((label, company.get(key, "") or "") for key, label in COMPANY_FORM_FIELDS)
+        cust_headers = tuple(label for _key, label in CUSTOMER_FORM_FIELDS)
+        cust_keys = tuple(key for key, _label in CUSTOMER_FORM_FIELDS)
+        customer_rows = tuple(
+            tuple(str(row[key] or "") for key in cust_keys) for row in billing.fetch_customers()
+        )
+        excel_export.export_sheets_to_xlsx(
+            parent=self,
+            default_name=f"당사거래처_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            sheets=(
+                ("당사", ("항목", "내용"), company_rows),
+                ("거래처", cust_headers, customer_rows),
+            ),
+        )
 
     def refresh(self) -> None:
         self._load_company()
@@ -840,17 +859,14 @@ class ClaimTab(ctk.CTkFrame):
         row = billing.get_claim(self._selected_id)
         if row is None:
             return
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="업무협조전(손실보전금) 저장",
-            defaultextension=".xlsx",
-            initialfile=f"업무협조전_손실보전금_{row['customer_name']}_{row['claim_date']}.xlsx",
-            filetypes=[("Excel 통합 문서", "*.xlsx")],
+        path = billing_forms.default_export_path(
+            "업무협조전_손실보전금", f"{row['customer_name']}_{row['claim_date']}"
         )
-        if not path:
-            return
-        saved = billing_forms.export_loss_claim(path, row)
-        messagebox.showinfo("발행", f"저장했습니다.\n{saved}", parent=self)
+        try:
+            saved = billing_forms.export_loss_claim(path, row)
+            billing_forms.open_exported(saved)
+        except OSError as exc:
+            messagebox.showwarning("열기", f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}", parent=self)
 
     def _clear(self) -> None:
         self._selected_id = None

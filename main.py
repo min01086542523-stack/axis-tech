@@ -5,7 +5,7 @@ from __future__ import annotations
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
@@ -17,6 +17,11 @@ import brand
 import charts
 import config as app_config
 import database as db
+from excel_export import (
+    ask_xlsx_path as _ask_xlsx_path,
+    export_sheets_to_xlsx as _export_sheets_to_xlsx,
+    export_tree_to_xlsx as _export_tree_to_xlsx,
+)
 import hr_database as hr_db
 import hr_ui
 import report_service
@@ -594,8 +599,24 @@ class ProductsPage(PageBase):
             "완제품/자재를 등록하고 기본단가·안전재고를 관리합니다. 현재고가 안전재고보다 낮으면 경고와 알림이 발생합니다.",
         )
         self._selected_id: int | None = None
+        header_btns = ctk.CTkFrame(self.header_actions, fg_color="transparent")
+        header_btns.pack(side="right")
         ctk.CTkButton(
-            self.header_actions,
+            header_btns,
+            text="삭제",
+            width=90,
+            fg_color="#a33",
+            hover_color="#822",
+            command=self._on_delete,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(header_btns, text="수정", width=90, command=self._on_update).pack(
+            side="right", padx=(8, 0)
+        )
+        ctk.CTkButton(header_btns, text="등록", width=90, command=self._on_create).pack(
+            side="right", padx=(8, 0)
+        )
+        ctk.CTkButton(
+            header_btns,
             text="엑셀 내보내기",
             width=130,
             command=self._on_export,
@@ -628,7 +649,7 @@ class ProductsPage(PageBase):
         self.entry_fax = _form_entry(form, 3, 2, "팩스번호")
 
         buttons = ctk.CTkFrame(form, fg_color="transparent")
-        buttons.grid(row=4, column=0, columnspan=6, sticky="e", padx=12, pady=10)
+        buttons.grid(row=4, column=0, columnspan=6, sticky="w", padx=8, pady=(4, 10))
         ctk.CTkButton(buttons, text="등록", width=90, command=self._on_create).pack(
             side="left", padx=4
         )
@@ -2887,110 +2908,6 @@ def _make_tree(
 def _clear_tree(tree: ttk.Treeview) -> None:
     for item in tree.get_children():
         tree.delete(item)
-
-
-def _ask_xlsx_path(parent, default_name: str) -> str | None:
-    path = filedialog.asksaveasfilename(
-        parent=parent,
-        title="엑셀 파일로 저장",
-        defaultextension=".xlsx",
-        initialfile=default_name,
-        filetypes=[("Excel 통합 문서", "*.xlsx")],
-    )
-    if not path:
-        return None
-    if not path.lower().endswith(".xlsx"):
-        path += ".xlsx"
-    return path
-
-
-def _export_sheets_to_xlsx(parent, default_name: str, sheets: tuple) -> None:
-    try:
-        from openpyxl import Workbook
-        from openpyxl.styles import Alignment, Font, PatternFill
-        from openpyxl.utils import get_column_letter
-    except ImportError:
-        messagebox.showerror(
-            "엑셀 내보내기",
-            "openpyxl 패키지가 필요합니다.\n터미널에서 pip install openpyxl 을 실행하세요.",
-            parent=parent,
-        )
-        return
-
-    if not any(sheet[2] for sheet in sheets):
-        messagebox.showwarning("엑셀 내보내기", "내보낼 데이터가 없습니다.", parent=parent)
-        return
-
-    path = _ask_xlsx_path(parent, default_name)
-    if not path:
-        return
-
-    workbook = Workbook()
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="1F6AA5")
-    header_align = Alignment(horizontal="center", vertical="center")
-
-    for index, (title, headers, rows) in enumerate(sheets):
-        sheet = workbook.active if index == 0 else workbook.create_sheet()
-        sheet.title = title[:31]
-        for col_idx, heading in enumerate(headers, start=1):
-            cell = sheet.cell(row=1, column=col_idx, value=heading)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-        for row_idx, values in enumerate(rows, start=2):
-            for col_idx, value in enumerate(values, start=1):
-                sheet.cell(row=row_idx, column=col_idx, value=value)
-        for col_idx, heading in enumerate(headers, start=1):
-            max_len = len(str(heading))
-            for row_idx in range(2, len(rows) + 2):
-                max_len = max(max_len, len(str(sheet.cell(row=row_idx, column=col_idx).value or "")))
-            sheet.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 4, 40)
-        if rows:
-            sheet.auto_filter.ref = sheet.dimensions
-        sheet.freeze_panes = "A2"
-
-    try:
-        workbook.save(path)
-    except OSError as exc:
-        messagebox.showerror("엑셀 내보내기", f"파일을 저장하지 못했습니다.\n{exc}", parent=parent)
-        return
-    messagebox.showinfo("엑셀 내보내기", f"저장했습니다.\n{path}", parent=parent)
-
-
-def _export_tree_to_xlsx(
-    tree: ttk.Treeview,
-    parent,
-    default_name: str,
-    numeric_columns: set[str] | None = None,
-) -> None:
-    numeric_columns = numeric_columns or set()
-    columns = list(tree["columns"])
-    headers = tuple(tree.heading(col)["text"] for col in columns)
-    data = []
-    for item_id in tree.get_children():
-        values = tree.item(item_id, "values")
-        row = []
-        for col, raw in zip(columns, values):
-            value: object = raw
-            if col in numeric_columns:
-                cleaned = str(raw).replace(",", "").strip()
-                try:
-                    if cleaned == "":
-                        value = 0
-                    elif "." in cleaned:
-                        value = float(cleaned)
-                    else:
-                        value = int(cleaned)
-                except ValueError:
-                    value = raw
-            row.append(value)
-        data.append(tuple(row))
-    _export_sheets_to_xlsx(
-        parent=parent,
-        default_name=default_name,
-        sheets=(("내보내기", headers, tuple(data)),),
-    )
 
 
 def main() -> None:

@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, ttk
 
 import customtkinter as ctk
 
+import excel_export
 import hr_crypto
 import hr_database as hr
 import hr_forms
@@ -99,6 +100,7 @@ class HrMasterPage(ctk.CTkFrame):
         ctk.CTkButton(
             buttons, text="초기화", width=90, fg_color="transparent", border_width=1, command=self._clear
         ).pack(side="left", padx=4)
+        ctk.CTkButton(buttons, text="직원명단", width=100, command=self._on_roster).pack(side="left", padx=4)
 
         table_wrap = ctk.CTkFrame(self)
         table_wrap.pack(fill="both", expand=True)
@@ -204,7 +206,11 @@ class HrMasterPage(ctk.CTkFrame):
         if self._selected_id is None:
             messagebox.showwarning("선택 필요", "삭제할 사원을 선택하세요.", parent=self)
             return
-        if not messagebox.askyesno("삭제 확인", "이 사원을 삭제할까요?", parent=self):
+        if not messagebox.askyesno(
+            "삭제 확인",
+            "이 사원을 바로 삭제할까요?\n연결된 급여·연차·서식 이력도 함께 삭제됩니다.",
+            parent=self,
+        ):
             return
         try:
             hr.delete_employee(self._selected_id)
@@ -263,6 +269,15 @@ class HrMasterPage(ctk.CTkFrame):
         _set(self.entry_bank, link.bank_name)
         _set(self.entry_account, link.bank_account)
         _set(self.entry_address, link.address)
+
+    def _on_roster(self) -> None:
+        try:
+            saved = hr_forms.export_employee_list()
+            hr_forms.open_exported(saved)
+        except hr.HrError as exc:
+            messagebox.showerror("발행 실패", str(exc), parent=self)
+        except OSError as exc:
+            messagebox.showwarning("열기", f"명단은 저장했습니다.\n파일을 열지 못했습니다: {exc}", parent=self)
 
 
 class HrPayrollPage(ctk.CTkFrame):
@@ -954,7 +969,9 @@ class ToolLedgerPage(ctk.CTkFrame):
 
         buttons = ctk.CTkFrame(form, fg_color="transparent")
         buttons.grid(row=2, column=2, columnspan=4, sticky="e", padx=12, pady=8)
+        ctk.CTkButton(buttons, text="엑셀 내보내기", width=120, command=self._on_export).pack(side="left", padx=4)
         ctk.CTkButton(buttons, text="등록", width=90, command=self._on_create).pack(side="left", padx=4)
+        ctk.CTkButton(buttons, text="수정", width=90, command=self._on_update).pack(side="left", padx=4)
         ctk.CTkButton(
             buttons, text="삭제", width=90, fg_color="#a33", hover_color="#822", command=self._on_delete
         ).pack(side="left", padx=4)
@@ -1043,6 +1060,37 @@ class ToolLedgerPage(ctk.CTkFrame):
         self.refresh()
         messagebox.showinfo("완료", "공구 수불을 등록했습니다.", parent=self)
 
+    def _on_update(self) -> None:
+        if self._selected_id is None:
+            messagebox.showwarning("선택 필요", "수정할 행을 목록에서 선택하세요.", parent=self)
+            return
+        emp_id = self._emp_map.get(self.combo_emp.get())
+        if emp_id is None:
+            messagebox.showwarning("선택 필요", "작업자를 선택하세요. 인사 마스터에 사원이 있어야 합니다.", parent=self)
+            return
+        try:
+            qty_in = _money(self.entry_in.get() or "0", "입고")
+            qty_out = _money(self.entry_out.get() or "0", "출고")
+            hr.update_tool_move(
+                self._selected_id,
+                emp_id,
+                self.entry_date.get().strip(),
+                self.entry_tool.get().strip(),
+                self.entry_spec.get().strip(),
+                qty_in,
+                qty_out,
+                self.entry_remark.get().strip(),
+            )
+        except (ValueError, hr.HrError) as exc:
+            messagebox.showwarning("수정 실패", str(exc), parent=self)
+            return
+        selected = self._selected_id
+        self.refresh()
+        if selected is not None and self.tree.exists(str(selected)):
+            self.tree.selection_set(str(selected))
+            self._selected_id = selected
+        messagebox.showinfo("완료", "공구 수불을 수정했습니다.", parent=self)
+
     def _on_delete(self) -> None:
         if self._selected_id is None:
             messagebox.showwarning("선택 필요", "삭제할 행을 목록에서 선택하세요.", parent=self)
@@ -1057,6 +1105,14 @@ class ToolLedgerPage(ctk.CTkFrame):
         self._selected_id = None
         self.refresh()
         messagebox.showinfo("완료", "삭제했습니다.", parent=self)
+
+    def _on_export(self) -> None:
+        excel_export.export_tree_to_xlsx(
+            self.tree,
+            parent=self,
+            default_name=f"작업공구수불대장_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            numeric_columns={"stock", "qout", "qin", "cum"},
+        )
 
 
 class HrFormsPage(ctk.CTkFrame):
@@ -1105,14 +1161,6 @@ class HrFormsPage(ctk.CTkFrame):
         self.entry_tool = _entry(extra, 1, 2, "공구명")
         self.entry_qty_in = _entry(extra, 2, 0, "공구입고")
         self.entry_qty_out = _entry(extra, 2, 1, "공구출고")
-        ctk.CTkButton(
-            extra,
-            text="기록 삭제",
-            width=110,
-            fg_color="#a33",
-            hover_color="#822",
-            command=self._on_delete_doc,
-        ).grid(row=2, column=5, sticky="e", padx=12, pady=8)
 
         docs = ctk.CTkFrame(self, corner_radius=10)
         docs.pack(fill="x", pady=(0, 12))
@@ -1139,9 +1187,31 @@ class HrFormsPage(ctk.CTkFrame):
 
         table_wrap = ctk.CTkFrame(self)
         table_wrap.pack(fill="both", expand=True)
+        bar = ctk.CTkFrame(table_wrap, fg_color="transparent")
+        bar.pack(fill="x", padx=8, pady=(8, 0))
+        self._checked: set[str] = set()
+        self._syncing_checks = False
+        self.chk_all = ctk.CTkCheckBox(bar, text="전체 선택", command=self._on_toggle_all)
+        self.chk_all.pack(side="left")
+        ctk.CTkButton(
+            bar,
+            text="선택 삭제",
+            width=110,
+            fg_color="#a33",
+            hover_color="#822",
+            command=self._on_delete_doc,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            bar,
+            text="전체 삭제",
+            width=110,
+            fg_color="#8a1f1f",
+            hover_color="#6d1818",
+            command=self._on_delete_all_docs,
+        ).pack(side="right")
         self.tree = ttk.Treeview(
             table_wrap,
-            columns=("at", "doc", "name", "hire", "resign", "file"),
+            columns=("chk", "at", "doc", "name", "hire", "resign", "file"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
@@ -1152,13 +1222,17 @@ class HrFormsPage(ctk.CTkFrame):
         vsb.pack(side="right", fill="y", padx=(0, 8), pady=8)
         for col, heading, width in zip(
             self.tree["columns"],
-            ("발행일시", "서식", "성명(스냅샷)", "입사일", "퇴사일", "파일"),
-            (150, 140, 120, 100, 100, 280),
+            ("선택", "발행일시", "서식", "성명(스냅샷)", "입사일", "퇴사일", "파일"),
+            (48, 150, 140, 120, 100, 100, 260),
         ):
-            self.tree.heading(col, text=heading)
+            if col == "chk":
+                self.tree.heading(col, text=heading, command=self._on_heading_check)
+            else:
+                self.tree.heading(col, text=heading)
             self.tree.column(col, width=width, anchor="center")
         self.tree.bind("<<TreeviewSelect>>", self._on_doc_select)
         self.tree.bind("<Double-1>", self._on_doc_open)
+        self.tree.bind("<Button-1>", self._on_tree_click)
 
     def refresh(self) -> None:
         self.reload_employee_combo()
@@ -1174,12 +1248,17 @@ class HrFormsPage(ctk.CTkFrame):
     def reload_docs(self) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
+        alive: set[str] = set()
         for row in hr.fetch_documents():
+            iid = str(row["id"])
+            alive.add(iid)
+            marked = iid in self._checked
             self.tree.insert(
                 "",
                 "end",
-                iid=str(row["id"]),
+                iid=iid,
                 values=(
+                    "☑" if marked else "☐",
                     row["issued_at"],
                     hr.DOC_TYPES.get(row["doc_type"], row["doc_type"]),
                     row["snap_name"] or row["current_name"] or "",
@@ -1188,6 +1267,60 @@ class HrFormsPage(ctk.CTkFrame):
                     row["file_path"] or "",
                 ),
             )
+        self._checked &= alive
+        self._sync_all_checkbox()
+
+    def _on_tree_click(self, event) -> None:
+        if self.tree.identify_region(event.x, event.y) != "cell":
+            return
+        if self.tree.identify_column(event.x) != "#1":
+            return
+        iid = self.tree.identify_row(event.y)
+        if iid:
+            self._toggle_check(iid)
+
+    def _toggle_check(self, iid: str) -> None:
+        if iid in self._checked:
+            self._checked.discard(iid)
+            self.tree.set(iid, "chk", "☐")
+        else:
+            self._checked.add(iid)
+            self.tree.set(iid, "chk", "☑")
+        self._sync_all_checkbox()
+
+    def _on_heading_check(self) -> None:
+        if self.chk_all.get():
+            self.chk_all.deselect()
+        else:
+            self.chk_all.select()
+        self._on_toggle_all()
+
+    def _on_toggle_all(self) -> None:
+        if self._syncing_checks:
+            return
+        items = list(self.tree.get_children())
+        if self.chk_all.get():
+            self._checked = set(items)
+            mark = "☑"
+        else:
+            self._checked.clear()
+            mark = "☐"
+        for iid in items:
+            self.tree.set(iid, "chk", mark)
+
+    def _sync_all_checkbox(self) -> None:
+        items = list(self.tree.get_children())
+        self._syncing_checks = True
+        try:
+            if items and self._checked >= set(items):
+                self.chk_all.select()
+            else:
+                self.chk_all.deselect()
+        finally:
+            self._syncing_checks = False
+
+    def _checked_ids(self) -> list[int]:
+        return [int(iid) for iid in self.tree.get_children() if iid in self._checked]
 
     def _apply_link(self, link: hr.EmployeeLink | None) -> None:
         self._link = link
@@ -1304,19 +1437,45 @@ class HrFormsPage(ctk.CTkFrame):
             messagebox.showwarning("열기", str(exc), parent=self)
 
     def _on_delete_doc(self) -> None:
-        selection = self.tree.selection()
-        if not selection:
-            messagebox.showwarning("선택 필요", "삭제할 서식 기록을 선택하세요.", parent=self)
+        ids = self._checked_ids()
+        if not ids:
+            selection = self.tree.selection()
+            if selection:
+                ids = [int(selection[0])]
+        if not ids:
+            messagebox.showwarning("선택 필요", "삭제할 서식 기록에 체크하세요.", parent=self)
             return
-        if not messagebox.askyesno("삭제 확인", "선택한 서식 발행 기록을 삭제할까요?", parent=self):
+        if not messagebox.askyesno("삭제 확인", f"체크한 서식 발행 기록 {len(ids)}건을 삭제할까요?", parent=self):
             return
         try:
-            hr.delete_document(int(selection[0]))
+            deleted = hr.delete_documents(ids)
         except hr.HrError as exc:
             messagebox.showerror("삭제 실패", str(exc), parent=self)
             return
+        self._checked.clear()
         self.reload_docs()
-        messagebox.showinfo("완료", "서식 기록을 삭제했습니다.", parent=self)
+        self.app.notify_data_changed()
+        messagebox.showinfo("완료", f"서식 기록 {deleted}건을 삭제했습니다.", parent=self)
+
+    def _on_delete_all_docs(self) -> None:
+        if not self.tree.get_children():
+            messagebox.showinfo("삭제", "삭제할 서식 발행 기록이 없습니다.", parent=self)
+            return
+        if not messagebox.askyesno(
+            "전체 삭제",
+            "인사서식 발급이력을 모두 삭제할까요?\n이 작업은 되돌릴 수 없습니다.",
+            parent=self,
+        ):
+            return
+        try:
+            deleted = hr.delete_all_documents()
+        except hr.HrError as exc:
+            messagebox.showerror("삭제 실패", str(exc), parent=self)
+            return
+        self._checked.clear()
+        self.reload_docs()
+        self.app.notify_data_changed()
+        messagebox.showinfo("완료", f"서식 기록 {deleted}건을 모두 삭제했습니다.", parent=self)
 
 
 def _entry(parent, row: int, col: int, label: str) -> ctk.CTkEntry:
