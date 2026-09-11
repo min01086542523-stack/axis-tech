@@ -1,0 +1,24 @@
+Traceback (most recent call last):
+  File "C:\Users\ss\manufacturing-mes\database.py", line 405, in _connect_postgres
+    raw = psycopg2.connect(**kwargs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ss\AppData\Local\Programs\Python\Python311\Lib\site-packages\psycopg2\__init__.py", line 135, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+psycopg2.OperationalError: could not translate host name "aws-0-ap-northeast-2.pooler.supabase.com" to address: Name or service not known
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\ss\manufacturing-mes\main.py", line 2674, in main
+    db.init_db()
+  File "C:\Users\ss\manufacturing-mes\database.py", line 424, in init_db
+    with get_connection() as conn:
+         ^^^^^^^^^^^^^^^^
+  File "C:\Users\ss\manufacturing-mes\database.py", line 416, in get_connection
+    return _connect_postgres()
+           ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ss\manufacturing-mes\database.py", line 407, in _connect_postgres
+    raise DatabaseError(
+database.DatabaseError: Supabase(PostgreSQL Session Pooler)에 연결하지 못했습니다. config.json 주소·계정·비밀번호와 네트워크를 확인하세요.

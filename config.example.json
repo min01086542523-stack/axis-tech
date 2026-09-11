@@ -1,0 +1,37 @@
+{
+  "database": {
+    "backend": "supabase",
+    "host": "aws-0-ap-northeast-2.pooler.supabase.com",
+    "port": 5432,
+    "database": "postgres",
+    "user": "postgres.PROJECT_REF",
+    "password": "min84352937",
+    "sslmode": "require"
+  },
+  "report": {
+    "enabled": false,
+    "hour": 7,
+    "minute": 0,
+    "send_email": true,
+    "send_sms": false,
+    "send_kakao": false,
+    "send_safety_alerts": true,
+    "email": {
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "username": "your-account@gmail.com",
+      "password": "앱비밀번호",
+      "from_addr": "your-account@gmail.com",
+      "to_addrs": "manager@example.com"
+    },
+    "kakao": {
+      "mode": "solapi",
+      "solapi_api_key": "",
+      "solapi_api_secret": "",
+      "from_number": "등록된발신번호",
+      "to_number": "01012345678",
+      "pf_id": "",
+      "template_id": ""
+    }
+  }
+}
