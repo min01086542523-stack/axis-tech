@@ -54,17 +54,45 @@ def to_excel_bytes(df: pd.DataFrame, sheet: str = "data") -> bytes:
     return buf.getvalue()
 
 
+def notify_cloud() -> None:
+    if not db.uses_cloud_db():
+        return
+    try:
+        db.publish_mobile_dashboard(dashboard_data.build_dashboard())
+    except Exception:
+        pass
+
+
+def flash_ok(message: str) -> None:
+    notify_cloud()
+    st.success(message)
+
+
+def cloud_badge() -> str:
+    if db.uses_cloud_db():
+        stamp = db.mes_dashboard_updated_at()
+        extra = f" · 스냅샷 {stamp}" if stamp else ""
+        return f"Supabase 연결됨{extra}"
+    return "로컬 SQLite (Secrets에 DATABASE_URL이 없습니다)"
+
+
 @st.cache_resource
-def boot() -> bool:
+def _boot_cached(dsn_flag: str) -> bool:
     db.init_db()
     auth.init_user_db()
     hr_db.init_hr_db()
     billing_db.init_billing_db()
-    db.seed_if_empty()
-    hr_db.seed_hr_if_empty()
-    billing_db.seed_billing_if_empty()
+    if not dsn_flag:
+        db.seed_if_empty()
+        hr_db.seed_hr_if_empty()
+        billing_db.seed_billing_if_empty()
     db.link_production_workers()
     return True
+
+
+def boot() -> bool:
+    db.apply_runtime_secrets()
+    return _boot_cached(db.cloud_dsn())
 
 
 def product_labels(active_only: bool = True, item_type: str | None = None) -> dict[str, int]:
@@ -117,7 +145,7 @@ def allowed_nav(role: str) -> list[tuple[str, str]]:
     return [(k, lab) for k, lab in NAV if auth.can_access(role, k)]
 
 
-def page_dashboard() -> None:
+def page_dashboard_body() -> None:
     data = dashboard_data.build_dashboard()
     stats = db.dashboard_stats()
     c1, c2, c3, c4 = st.columns(4)
@@ -133,6 +161,14 @@ def page_dashboard() -> None:
     st.dataframe(pd.DataFrame(prod.get("logs") or []), use_container_width=True, hide_index=True)
     st.subheader("현재고")
     st.dataframe(pd.DataFrame(prod.get("stock") or []), use_container_width=True, hide_index=True)
+
+
+def page_dashboard() -> None:
+    st.caption("PC 생산 MES와 같은 `products` · `production_logs` · `customers` · `users` 테이블을 사용합니다.")
+    if hasattr(st, "fragment"):
+        st.fragment(run_every=5)(page_dashboard_body)()
+    else:
+        page_dashboard_body()
 
 
 def page_products() -> None:
@@ -153,7 +189,7 @@ def page_products() -> None:
         try:
             item_type = db.ITEM_TYPE_FG if kind == "완제품" else db.ITEM_TYPE_RM
             db.insert_product(code, name, spec, unit, price, item_type, safety, supplier)
-            st.success("품목을 등록했습니다.")
+            flash_ok("품목을 등록했습니다.")
         except db.DatabaseError as exc:
             st.error(str(exc))
     df = rows_df(db.fetch_products())
@@ -167,7 +203,7 @@ def page_products() -> None:
         if st.button("선택한 품목 삭제"):
             try:
                 db.delete_product(labels[pick])
-                st.success("삭제했습니다.")
+                flash_ok("삭제했습니다.")
                 st.rerun()
             except db.DatabaseError as exc:
                 st.error(str(exc))
@@ -185,7 +221,7 @@ def page_bom() -> None:
     if st.button("BOM 저장", type="primary"):
         try:
             db.upsert_bom(fgs[fg], rms[rm], qty)
-            st.success("BOM을 저장했습니다.")
+            flash_ok("BOM을 저장했습니다.")
         except db.DatabaseError as exc:
             st.error(str(exc))
     st.dataframe(rows_df(db.fetch_all_bom()), use_container_width=True, hide_index=True)
@@ -231,7 +267,7 @@ def page_logs() -> None:
                 unit_price=float(in_price),
                 defect_unit_price=float(defect_price),
             )
-            st.success("생산 실적을 등록했습니다.")
+            flash_ok("생산 실적을 등록했습니다.")
         except db.DatabaseError as exc:
             st.error(str(exc))
     df = rows_df(db.fetch_production_logs())
@@ -259,7 +295,7 @@ def page_inventory() -> None:
                     db.return_stock(pid, qty, remark)
                 else:
                     db.scrap_stock(pid, qty, remark)
-                st.success("재고를 반영했습니다.")
+                flash_ok("재고를 반영했습니다.")
             except db.DatabaseError as exc:
                 st.error(str(exc))
     stock = rows_df(db.fetch_inventory())
@@ -299,7 +335,7 @@ def page_tools() -> None:
                 qty_out,
                 remark,
             )
-            st.success("공구 수불을 등록했습니다.")
+            flash_ok("공구 수불을 등록했습니다.")
         except hr_db.HrError as exc:
             st.error(str(exc))
     st.dataframe(rows_df(hr_db.fetch_tool_ledger()), use_container_width=True, hide_index=True)
@@ -330,7 +366,7 @@ def page_hr() -> None:
                 phone=phone,
                 hourly_wage=wage,
             )
-            st.success("사원을 등록했습니다.")
+            flash_ok("사원을 등록했습니다.")
         except hr_db.HrError as exc:
             st.error(str(exc))
     df = rows_df(hr_db.fetch_employees())
@@ -351,7 +387,7 @@ def page_payroll() -> None:
     if st.button("급여 계산·저장", type="primary"):
         try:
             net = hr_db.upsert_payroll(workers[emp], ym, base_pay=base, overtime=ot, allowance=allow)
-            st.success(f"실지급액 {int(net):,}원으로 저장했습니다.")
+            flash_ok(f"실지급액 {int(net):,}원으로 저장했습니다.")
         except hr_db.HrError as exc:
             st.error(str(exc))
     st.dataframe(rows_df(hr_db.fetch_payroll(pay_ym=ym)), use_container_width=True, hide_index=True)
@@ -399,7 +435,7 @@ def page_billing() -> None:
                     remarks,
                     product_id=pid,
                 )
-                st.success("거래명세를 등록했습니다.")
+                flash_ok("거래명세를 등록했습니다.")
             except billing_db.BillingError as exc:
                 st.error(str(exc))
         st.dataframe(rows_df(billing_db.fetch_statements()), use_container_width=True, hide_index=True)
@@ -426,7 +462,7 @@ def page_billing() -> None:
                     material,
                     details,
                 )
-                st.success("손실청구를 등록했습니다.")
+                flash_ok("손실청구를 등록했습니다.")
             except billing_db.BillingError as exc:
                 st.error(str(exc))
         st.dataframe(rows_df(billing_db.fetch_claims()), use_container_width=True, hide_index=True)
@@ -447,7 +483,7 @@ def page_billing() -> None:
                         phone=phone,
                         address=address,
                     )
-                    st.success("저장했습니다.")
+                    flash_ok("저장했습니다.")
                 except billing_db.BillingError as exc:
                     st.error(str(exc))
         with st.form("customer"):
@@ -457,22 +493,28 @@ def page_billing() -> None:
             if st.form_submit_button("거래처 추가"):
                 try:
                     billing_db.insert_customer(company_name=cname, biz_no=cbiz, phone=cphone)
-                    st.success("거래처를 추가했습니다.")
+                    flash_ok("거래처를 추가했습니다.")
                 except billing_db.BillingError as exc:
                     st.error(str(exc))
         st.dataframe(rows_df(billing_db.fetch_customers(False)), use_container_width=True, hide_index=True)
 
 
 def page_settings() -> None:
-    st.caption("메일·카카오 발송 설정은 config.json / Streamlit Secrets의 DATABASE_URL과 함께 사용합니다.")
-    cfg = __import__("config", fromlist=["load_config"]).load_config()
-    st.json(
-        {
-            "database_backend": (cfg.get("database") or {}).get("backend"),
-            "report_enabled": (cfg.get("report") or {}).get("enabled"),
-        }
+    st.caption("Streamlit Cloud → App settings → Secrets 에 데스크톱 MES와 같은 접속값을 넣습니다.")
+    connected = db.uses_cloud_db()
+    st.write("연결 상태:", "Supabase PostgreSQL" if connected else "로컬 SQLite")
+    st.write("mes_dashboard 갱신:", db.mes_dashboard_updated_at() or "(없음)")
+    st.markdown(
+        """
+        Secrets 예시:
+
+        ```toml
+        DATABASE_URL = "postgresql://postgres.PROJECT:PASSWORD@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
+        SUPABASE_URL = "https://PROJECT.supabase.co"
+        SUPABASE_ANON_KEY = "eyJ..."
+        ```
+        """
     )
-    st.info("클라우드에서는 App settings → Secrets에 DATABASE_URL을 넣으면 Supabase PostgreSQL을 사용합니다.")
 
 
 def page_accounts(user: dict[str, Any]) -> None:
@@ -495,7 +537,7 @@ def page_accounts(user: dict[str, Any]) -> None:
         role_key = {lab: k for k, lab in auth.ROLE_CHOICES}[role_label]
         try:
             auth.create_user(uid, pw, name, dept, role_key, title, actor_id=user["id"])
-            st.success("계정을 등록했습니다.")
+            flash_ok("계정을 등록했습니다.")
             st.rerun()
         except auth.AuthError as exc:
             st.error(str(exc))
@@ -515,6 +557,7 @@ def main() -> None:
     with st.sidebar:
         st.markdown(f"**{user.get('display_name', '')}**")
         st.caption(auth.profile_label(user["role"], user.get("job_title") or ""))
+        st.caption(cloud_badge())
         choice = st.radio("메뉴", labels, index=keys.index(current))
         st.session_state.page = keys[labels.index(choice)]
         if st.button("로그아웃"):

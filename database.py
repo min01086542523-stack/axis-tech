@@ -47,6 +47,7 @@ _SERIAL_TABLES = frozenset({
     "loss_claims",
     "customers",
     "app_users",
+    "sms_logs",
 })
 _PRAGMA_INFO = re.compile(r"^\s*PRAGMA\s+table_info\(\s*['\"]?(\w+)['\"]?\s*\)\s*;?\s*$", re.I)
 _SQLITE_MASTER = re.compile(
@@ -97,8 +98,91 @@ def _with_ssl(url: str) -> str:
     return url
 
 
+def apply_runtime_secrets() -> None:
+    """Streamlit secrets / 환경변수에서 Supabase 접속값을 os.environ 으로 올린다."""
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        if get_script_run_ctx() is None:
+            return
+        import streamlit as st
+
+        raw = dict(st.secrets)
+    except Exception:
+        return
+
+    flat: dict[str, str] = {}
+    for key, value in raw.items():
+        if isinstance(value, dict):
+            for nested_key, nested in value.items():
+                if nested is None or isinstance(nested, dict):
+                    continue
+                text = str(nested).strip()
+                if text:
+                    flat[str(nested_key)] = text
+                    flat[f"{key}_{nested_key}"] = text
+            continue
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            flat[str(key)] = text
+
+    aliases = {
+        "DATABASE_URL": (
+            "DATABASE_URL",
+            "database_url",
+            "SUPABASE_DB_URL",
+            "SUPABASE_DATABASE_URL",
+            "db_url",
+            "dsn",
+        ),
+        "SUPABASE_URL": ("SUPABASE_URL", "supabase_url", "url"),
+        "SUPABASE_ANON_KEY": (
+            "SUPABASE_ANON_KEY",
+            "SUPABASE_KEY",
+            "anon_key",
+            "api_key",
+            "service_role_key",
+        ),
+    }
+    for env_name, keys in aliases.items():
+        if os.environ.get(env_name, "").strip():
+            continue
+        for key in keys:
+            val = flat.get(key)
+            if not val:
+                continue
+            if env_name == "SUPABASE_URL" and "supabase.co" not in val.lower() and not val.startswith("http"):
+                continue
+            os.environ[env_name] = val
+            break
+
+    if not os.environ.get("DATABASE_URL", "").strip():
+        host = flat.get("host") or flat.get("hostname") or flat.get("pooler_host") or ""
+        password = flat.get("password") or flat.get("db_password") or ""
+        user = flat.get("user") or flat.get("username") or flat.get("db_user") or ""
+        dbname = flat.get("database") or flat.get("dbname") or "postgres"
+        if host and password:
+            from urllib.parse import quote_plus
+
+            port = flat.get("port") or "5432"
+            sslmode = flat.get("sslmode") or "require"
+            os.environ["DATABASE_URL"] = (
+                f"postgresql://{quote_plus(user or 'postgres')}:{quote_plus(password)}"
+                f"@{host}:{port}/{quote_plus(dbname)}?sslmode={sslmode}"
+            )
+
+    dsn = os.environ.get("DATABASE_URL", "")
+    if dsn and not os.environ.get("SUPABASE_URL", "").strip():
+        match = re.search(r"postgres\.([a-z0-9]+)", dsn, re.I)
+        if match:
+            os.environ["SUPABASE_URL"] = f"https://{match.group(1)}.supabase.co"
+
+
 def cloud_dsn() -> str:
     """Session Pooler 접속 문자열. 설정이 없으면 빈 문자열."""
+    apply_runtime_secrets()
     env_url = (
         os.environ.get("DATABASE_URL")
         or os.environ.get("SUPABASE_DB_URL")
@@ -508,6 +592,20 @@ def init_db() -> None:
                 updated_at TEXT    NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS sms_logs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                sent_at       TEXT    NOT NULL,
+                message_type  TEXT    NOT NULL,
+                from_number   TEXT    NOT NULL,
+                to_number     TEXT    NOT NULL,
+                subject       TEXT    NOT NULL DEFAULT '',
+                body          TEXT    NOT NULL,
+                ok            INTEGER NOT NULL DEFAULT 0,
+                group_id      TEXT    NOT NULL DEFAULT '',
+                error_text    TEXT    NOT NULL DEFAULT '',
+                customer_name TEXT    NOT NULL DEFAULT ''
+            );
+
             CREATE INDEX IF NOT EXISTS idx_products_code
                 ON products (product_code);
             CREATE INDEX IF NOT EXISTS idx_logs_work_date
@@ -516,6 +614,19 @@ def init_db() -> None:
                 ON production_logs (product_id);
             CREATE INDEX IF NOT EXISTS idx_movements_product
                 ON inventory_movements (product_id);
+            CREATE INDEX IF NOT EXISTS idx_sms_logs_sent
+                ON sms_logs (sent_at);
+
+            CREATE TABLE IF NOT EXISTS report_settings (
+                id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                solapi_api_key     TEXT    NOT NULL DEFAULT '',
+                solapi_api_secret  TEXT    NOT NULL DEFAULT '',
+                from_number        TEXT    NOT NULL DEFAULT '',
+                to_number          TEXT    NOT NULL DEFAULT '',
+                pf_id              TEXT    NOT NULL DEFAULT '',
+                template_id        TEXT    NOT NULL DEFAULT '',
+                updated_at         TEXT    NOT NULL DEFAULT ''
+            );
             """
         )
         _migrate(conn)
@@ -618,6 +729,20 @@ def publish_mobile_dashboard(payload: dict[str, Any]) -> bool:
         conn.close()
 
 
+def mes_dashboard_updated_at() -> str:
+    """휴대폰/웹 대시보드 스냅샷 마지막 시각."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT updated_at FROM mes_dashboard WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return ""
+        return str(row["updated_at"] if "updated_at" in row.keys() else row[0] or "")
+    except Exception:
+        return ""
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
     product_cols = {row[1] for row in conn.execute("PRAGMA table_info(products)")}
     if "unit_price" not in product_cols:
@@ -686,6 +811,37 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_logs_employee ON production_logs (employee_id)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS report_settings (
+            id                 INTEGER PRIMARY KEY CHECK (id = 1),
+            solapi_api_key     TEXT    NOT NULL DEFAULT '',
+            solapi_api_secret  TEXT    NOT NULL DEFAULT '',
+            from_number        TEXT    NOT NULL DEFAULT '',
+            to_number          TEXT    NOT NULL DEFAULT '',
+            pf_id              TEXT    NOT NULL DEFAULT '',
+            template_id        TEXT    NOT NULL DEFAULT '',
+            updated_at         TEXT    NOT NULL DEFAULT ''
+        )
+        """
+    )
+    try:
+        setting_cols = {row[1] for row in conn.execute("PRAGMA table_info(report_settings)")}
+    except Exception:
+        setting_cols = set()
+    for col in (
+        "solapi_api_key",
+        "solapi_api_secret",
+        "from_number",
+        "to_number",
+        "pf_id",
+        "template_id",
+        "updated_at",
+    ):
+        if setting_cols and col not in setting_cols:
+            conn.execute(
+                f"ALTER TABLE report_settings ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def _now() -> str:
@@ -2490,3 +2646,152 @@ def _adjust_stock(
         (product_id, move_type, delta, ref_type, ref_id, remark, now),
     )
     _rebuild_stock(conn, product_id)
+
+
+def insert_sms_log(
+    *,
+    message_type: str,
+    from_number: str,
+    to_number: str,
+    body: str,
+    ok: bool,
+    subject: str = "",
+    group_id: str = "",
+    error_text: str = "",
+    customer_name: str = "",
+    sent_at: str | None = None,
+) -> int:
+    """문자 발송 이력을 저장하고 id를 반환한다."""
+    stamp = sent_at or _now()
+    with get_connection() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO sms_logs (
+                sent_at, message_type, from_number, to_number, subject, body,
+                ok, group_id, error_text, customer_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                stamp,
+                str(message_type or "").upper(),
+                str(from_number or ""),
+                str(to_number or ""),
+                str(subject or ""),
+                str(body or ""),
+                1 if ok else 0,
+                str(group_id or ""),
+                str(error_text or "")[:2000],
+                str(customer_name or ""),
+            ),
+        )
+        return int(getattr(cur, "lastrowid", 0) or getattr(conn, "lastrowid", 0) or 0)
+
+
+def list_sms_logs(limit: int = 100) -> list[dict[str, Any]]:
+    cap = max(1, min(int(limit or 100), 500))
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, sent_at, message_type, from_number, to_number, subject, body,
+                   ok, group_id, error_text, customer_name
+            FROM sms_logs
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (cap,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_report_kakao_settings() -> dict[str, str] | None:
+    """리포트 솔라피/알림톡 설정. 저장된 행이 없으면 None."""
+    try:
+        with get_connection() as conn:
+            row = conn.execute("SELECT * FROM report_settings WHERE id = 1").fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    data = dict(row)
+    return {
+        "solapi_api_key": str(data.get("solapi_api_key") or ""),
+        "solapi_api_secret": str(data.get("solapi_api_secret") or ""),
+        "from_number": str(data.get("from_number") or ""),
+        "to_number": str(data.get("to_number") or ""),
+        "pf_id": str(data.get("pf_id") or data.get("pfId") or ""),
+        "template_id": str(data.get("template_id") or data.get("templateId") or ""),
+    }
+
+
+def save_report_kakao_settings(
+    *,
+    solapi_api_key: str = "",
+    solapi_api_secret: str = "",
+    from_number: str = "",
+    to_number: str = "",
+    pf_id: str = "",
+    template_id: str = "",
+) -> None:
+    stamp = _now()
+    values = (
+        1,
+        str(solapi_api_key or "").strip(),
+        str(solapi_api_secret or "").strip(),
+        str(from_number or "").strip(),
+        str(to_number or "").strip(),
+        str(pf_id or "").strip(),
+        str(template_id or "").strip(),
+        stamp,
+    )
+    with get_connection() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_settings (
+                id                 INTEGER PRIMARY KEY CHECK (id = 1),
+                solapi_api_key     TEXT    NOT NULL DEFAULT '',
+                solapi_api_secret  TEXT    NOT NULL DEFAULT '',
+                from_number        TEXT    NOT NULL DEFAULT '',
+                to_number          TEXT    NOT NULL DEFAULT '',
+                pf_id              TEXT    NOT NULL DEFAULT '',
+                template_id        TEXT    NOT NULL DEFAULT '',
+                updated_at         TEXT    NOT NULL DEFAULT ''
+            )
+            """
+        )
+        exists = conn.execute("SELECT 1 FROM report_settings WHERE id = 1").fetchone()
+        if exists:
+            conn.execute(
+                """
+                UPDATE report_settings SET
+                    solapi_api_key = ?, solapi_api_secret = ?,
+                    from_number = ?, to_number = ?,
+                    pf_id = ?, template_id = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                values[1:],
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO report_settings (
+                    id, solapi_api_key, solapi_api_secret, from_number, to_number,
+                    pf_id, template_id, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+
+
+def merge_report_kakao(kakao: dict[str, Any] | None) -> dict[str, Any]:
+    """config 값과 DB 알림톡 설정을 합친다. DB 행이 있으면 그 값이 우선한다."""
+    merged = dict(kakao or {})
+    if not str(merged.get("pf_id") or "").strip():
+        merged["pf_id"] = str(merged.get("pfId") or "")
+    if not str(merged.get("template_id") or "").strip():
+        merged["template_id"] = str(merged.get("templateId") or "")
+    saved = get_report_kakao_settings()
+    if saved is not None:
+        merged.update(saved)
+    merged["pf_id"] = str(merged.get("pf_id") or merged.get("pfId") or "").strip()
+    merged["template_id"] = str(merged.get("template_id") or merged.get("templateId") or "").strip()
+    return merged
