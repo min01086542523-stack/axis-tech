@@ -15,9 +15,12 @@ DATA_PATH = DASHBOARD_DIR / "data.json"
 
 
 def _txt(row: Any, key: str, default: str = "") -> str:
-    if row is None or key not in row.keys():
+    if row is None:
         return default
-    value = row[key]
+    try:
+        value = row[key]
+    except Exception:
+        return default
     return default if value is None else str(value)
 
 
@@ -145,6 +148,10 @@ def build_dashboard() -> dict[str, Any]:
     hired: list[dict[str, Any]] = []
     resigned: list[dict[str, Any]] = []
     contracts: list[dict[str, Any]] = []
+    certs: list[dict[str, Any]] = []
+    resign_docs: list[dict[str, Any]] = []
+    vacations: list[dict[str, Any]] = []
+    expenses: list[dict[str, Any]] = []
     severance: list[dict[str, Any]] = []
     severance_total = 0
     month_hired = 0
@@ -154,18 +161,54 @@ def build_dashboard() -> dict[str, Any]:
         for row in hr_db.fetch_documents(400)
         if _txt(row, "doc_type") == "EMPLOYMENT_CONTRACT" and row["employee_id"]
     }
-    for row in hr_db.fetch_documents(200):
-        if _txt(row, "doc_type") != "EMPLOYMENT_CONTRACT":
+    buckets = {
+        "EMPLOYMENT_CONTRACT": contracts,
+        "CERT_EMPLOYMENT": certs,
+        "RESIGNATION": resign_docs,
+        "VACATION_PLAN": vacations,
+        "EXPENSE_REQUEST": expenses,
+    }
+    for row in hr_db.fetch_documents(300):
+        dtype = _txt(row, "doc_type")
+        target = buckets.get(dtype)
+        if target is None:
             continue
-        contracts.append(
-            {
-                "at": _txt(row, "created_at"),
-                "name": _txt(row, "current_name") or _txt(row, "snap_name"),
-                "emp_no": _txt(row, "emp_no"),
-                "hire": _txt(row, "snap_hire_date"),
-                "status": "발행",
-            }
-        )
+        payload: dict[str, Any] = {}
+        try:
+            payload = json.loads(_txt(row, "payload_json") or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        code = _txt(row, "company_code") or str(payload.get("company_code") or "")
+        daily = payload.get("daily_wage") or 0
+        try:
+            daily_wage = int(daily) if daily else 0
+        except (TypeError, ValueError):
+            daily_wage = 0
+        item = {
+            "id": int(row["id"]),
+            "at": _txt(row, "issued_at"),
+            "name": _txt(row, "current_name") or _txt(row, "snap_name"),
+            "emp_no": _txt(row, "snap_emp_no") or _txt(row, "emp_no"),
+            "hire": _txt(row, "snap_hire_date") or str(payload.get("form_hire") or payload.get("hire_date") or ""),
+            "status": "발행",
+            "company_code": code,
+            "company": hr_db.contract_company_label(code) or _txt(row, "title") or hr_db.DOC_TYPES.get(dtype, dtype),
+            "title": _txt(row, "title"),
+            "daily_wage": daily_wage,
+            "econtract": bool(payload.get("econtract")) or code in hr_db.ELECTRONIC_CONTRACT_CODES,
+            "esign": bool(payload.get("esign")) or dtype in {
+                "CERT_EMPLOYMENT", "RESIGNATION", "VACATION_PLAN", "EXPENSE_REQUEST",
+            },
+            "summary": str(
+                payload.get("purpose")
+                or payload.get("reason")
+                or payload.get("plan_text")
+                or payload.get("amount")
+                or ""
+            ),
+            "doc_type": dtype,
+        }
+        target.append(item)
     for row in hr_db.fetch_employees(active_only=False):
         hire = _txt(row, "hire_date")
         resign = _txt(row, "resign_date")
@@ -189,11 +232,17 @@ def build_dashboard() -> dict[str, Any]:
         if int(row["id"]) not in issued:
             contracts.append(
                 {
+                    "id": 0,
                     "at": hire,
                     "name": person["name"],
                     "emp_no": person["emp_no"],
                     "hire": hire,
                     "status": "미발행" if not resign else "퇴직",
+                    "company_code": "",
+                    "company": "",
+                    "title": "",
+                    "daily_wage": 0,
+                    "econtract": False,
                 }
             )
         sev = _estimate_severance(row)
@@ -210,10 +259,34 @@ def build_dashboard() -> dict[str, Any]:
     hired.sort(key=lambda x: x["hire"], reverse=True)
     resigned.sort(key=lambda x: x["resign"], reverse=True)
     contracts.sort(key=lambda x: x["at"], reverse=True)
+    certs.sort(key=lambda x: x["at"], reverse=True)
+    resign_docs.sort(key=lambda x: x["at"], reverse=True)
+    vacations.sort(key=lambda x: x["at"], reverse=True)
+    expenses.sort(key=lambda x: x["at"], reverse=True)
+
+    econtract_url = ""
+    econtract_local = ""
+    try:
+        import econtract_server
+
+        econtract_url = econtract_server.public_url()
+        econtract_local = econtract_server.local_url()
+    except Exception:
+        pass
 
     return {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "today": today,
+        "econtract": {
+            "url": econtract_url,
+            "local": econtract_local,
+            "naeun": econtract_url,
+            "axis": (econtract_url.rstrip("/") + "/?brand=axis") if econtract_url else "",
+            "cert": (econtract_url.rstrip("/") + "/?doc=CERT_EMPLOYMENT") if econtract_url else "",
+            "resign": (econtract_url.rstrip("/") + "/?doc=RESIGNATION") if econtract_url else "",
+            "vacation": (econtract_url.rstrip("/") + "/?doc=VACATION_PLAN") if econtract_url else "",
+            "expense": (econtract_url.rstrip("/") + "/?doc=EXPENSE_REQUEST") if econtract_url else "",
+        },
         "production": {
             "kpis": {
                 "today_ship": stats["today_ship"],
@@ -242,6 +315,10 @@ def build_dashboard() -> dict[str, Any]:
                 "month_resigned": month_resigned,
                 "contracts": sum(1 for row in contracts if row["status"] == "발행"),
                 "pending_contracts": sum(1 for row in contracts if row["status"] == "미발행"),
+                "certs": len(certs),
+                "resign_docs": len(resign_docs),
+                "vacations": len(vacations),
+                "expenses": len(expenses),
                 "severance_total": severance_total,
                 "present": att["present"],
                 "absent": att["absent"],
@@ -249,6 +326,10 @@ def build_dashboard() -> dict[str, Any]:
             "hired": hired,
             "resigned": resigned,
             "contracts": contracts,
+            "certs": certs,
+            "resign_docs": resign_docs,
+            "vacations": vacations,
+            "expenses": expenses,
             "severance": severance,
         },
     }
@@ -272,6 +353,23 @@ def _sync_index_html(payload: dict[str, Any]) -> None:
     )
 
 
+def _sync_econtract_files() -> None:
+    if not DASHBOARD_DIR.exists():
+        return
+    src_dir = Path(__file__).resolve().parent / "econtract"
+    for name in (
+        "axis-form.html",
+        "seal-axis.png",
+        "seal-naeun.png",
+        "axis-logo.png",
+        "axis-logo-strong.png",
+        "axis-watermark.png",
+    ):
+        src = src_dir / name
+        if src.is_file():
+            (DASHBOARD_DIR / name).write_bytes(src.read_bytes())
+
+
 def export_json(path: Path | None = None) -> Path:
     target = path or DATA_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -279,4 +377,5 @@ def export_json(path: Path | None = None) -> Path:
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     db.publish_mobile_dashboard(payload)
     _sync_index_html(payload)
+    _sync_econtract_files()
     return target

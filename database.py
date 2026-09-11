@@ -98,81 +98,71 @@ def _with_ssl(url: str) -> str:
     return url
 
 
-def apply_runtime_secrets() -> None:
-    """Streamlit secrets / 환경변수에서 Supabase 접속값을 os.environ 으로 올린다."""
-    try:
-        from streamlit.runtime.scriptrunner import get_script_run_ctx
+def _strip_secret(value: Any) -> str:
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return text
 
-        if get_script_run_ctx() is None:
-            return
+
+def _secrets_lookup(*names: str) -> str:
+    try:
         import streamlit as st
 
-        raw = dict(st.secrets)
+        store = st.secrets
     except Exception:
-        return
-
-    flat: dict[str, str] = {}
-    for key, value in raw.items():
+        return ""
+    lowered = {n.lower(): n for n in names}
+    try:
+        items = list(store.items())
+    except Exception:
+        items = []
+        for name in names:
+            try:
+                items.append((name, store[name]))
+            except Exception:
+                continue
+    for key, value in items:
+        if str(key).lower() in lowered and not isinstance(value, dict):
+            text = _strip_secret(value)
+            if text:
+                return text
         if isinstance(value, dict):
             for nested_key, nested in value.items():
-                if nested is None or isinstance(nested, dict):
-                    continue
-                text = str(nested).strip()
-                if text:
-                    flat[str(nested_key)] = text
-                    flat[f"{key}_{nested_key}"] = text
-            continue
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text:
-            flat[str(key)] = text
+                if str(nested_key).lower() in lowered and not isinstance(nested, dict):
+                    text = _strip_secret(nested)
+                    if text:
+                        return text
+    return ""
 
-    aliases = {
-        "DATABASE_URL": (
+
+def apply_runtime_secrets() -> None:
+    """Streamlit secrets / 환경변수에서 Supabase 접속값을 os.environ 으로 올린다."""
+    url = (
+        _strip_secret(os.environ.get("DATABASE_URL"))
+        or _strip_secret(os.environ.get("SUPABASE_DB_URL"))
+        or _strip_secret(os.environ.get("SUPABASE_DATABASE_URL"))
+        or _secrets_lookup(
             "DATABASE_URL",
             "database_url",
             "SUPABASE_DB_URL",
             "SUPABASE_DATABASE_URL",
             "db_url",
             "dsn",
-        ),
-        "SUPABASE_URL": ("SUPABASE_URL", "supabase_url", "url"),
-        "SUPABASE_ANON_KEY": (
-            "SUPABASE_ANON_KEY",
-            "SUPABASE_KEY",
-            "anon_key",
-            "api_key",
-            "service_role_key",
-        ),
-    }
-    for env_name, keys in aliases.items():
-        if os.environ.get(env_name, "").strip():
-            continue
-        for key in keys:
-            val = flat.get(key)
-            if not val:
-                continue
-            if env_name == "SUPABASE_URL" and "supabase.co" not in val.lower() and not val.startswith("http"):
-                continue
-            os.environ[env_name] = val
-            break
-
-    if not os.environ.get("DATABASE_URL", "").strip():
-        host = flat.get("host") or flat.get("hostname") or flat.get("pooler_host") or ""
-        password = flat.get("password") or flat.get("db_password") or ""
-        user = flat.get("user") or flat.get("username") or flat.get("db_user") or ""
-        dbname = flat.get("database") or flat.get("dbname") or "postgres"
-        if host and password:
-            from urllib.parse import quote_plus
-
-            port = flat.get("port") or "5432"
-            sslmode = flat.get("sslmode") or "require"
-            os.environ["DATABASE_URL"] = (
-                f"postgresql://{quote_plus(user or 'postgres')}:{quote_plus(password)}"
-                f"@{host}:{port}/{quote_plus(dbname)}?sslmode={sslmode}"
-            )
-
+        )
+    )
+    if url:
+        os.environ["DATABASE_URL"] = url
+    supabase_url = _strip_secret(os.environ.get("SUPABASE_URL")) or _secrets_lookup(
+        "SUPABASE_URL", "supabase_url"
+    )
+    if supabase_url:
+        os.environ["SUPABASE_URL"] = supabase_url
+    anon = _strip_secret(os.environ.get("SUPABASE_ANON_KEY")) or _strip_secret(
+        os.environ.get("SUPABASE_KEY")
+    ) or _secrets_lookup("SUPABASE_ANON_KEY", "SUPABASE_KEY", "anon_key")
+    if anon:
+        os.environ["SUPABASE_ANON_KEY"] = anon
     dsn = os.environ.get("DATABASE_URL", "")
     if dsn and not os.environ.get("SUPABASE_URL", "").strip():
         match = re.search(r"postgres\.([a-z0-9]+)", dsn, re.I)
@@ -180,8 +170,15 @@ def apply_runtime_secrets() -> None:
             os.environ["SUPABASE_URL"] = f"https://{match.group(1)}.supabase.co"
 
 
+def normalize_database_url(url: str) -> str:
+    text = _strip_secret(url)
+    if text.startswith("postgres://"):
+        text = "postgresql://" + text[len("postgres://"):]
+    return _with_ssl(text) if text else ""
+
+
 def cloud_dsn() -> str:
-    """Session Pooler 접속 문자열. 설정이 없으면 빈 문자열."""
+    """Session Pooler 접속 문자열. Secrets DATABASE_URL을 config.json보다 우선한다."""
     apply_runtime_secrets()
     env_url = (
         os.environ.get("DATABASE_URL")
@@ -189,6 +186,8 @@ def cloud_dsn() -> str:
         or os.environ.get("SUPABASE_DATABASE_URL")
         or ""
     ).strip()
+    if env_url:
+        return normalize_database_url(env_url)
     cfg = app_config.load_config()
     data = _database_config()
     backend = _cfg_text(data, "backend", "engine", "driver", "mode").lower()
@@ -246,6 +245,51 @@ def uses_cloud_db() -> bool:
         return bool(cloud_dsn())
     except DatabaseError:
         return False
+
+
+MES_TABLES = (
+    "users",
+    "customers",
+    "products",
+    "production_logs",
+    "bom",
+    "inventory",
+    "inventory_movements",
+    "hr_employees",
+    "transaction_statements",
+    "mes_dashboard",
+)
+
+
+def safe_error_text(exc: BaseException) -> str:
+    text = str(exc)
+    text = re.sub(r":[^:@/\s]+@", ":***@", text)
+    text = re.sub(r"(password\s*=\s*)([^\s,]+)", r"\1***", text, flags=re.I)
+    return text or exc.__class__.__name__
+
+
+def ping_cloud() -> dict[str, Any]:
+    """Secrets/DSN으로 실제 Postgres에 접속하고 MES 테이블 건수를 확인한다."""
+    apply_runtime_secrets()
+    dsn = cloud_dsn()
+    if not dsn:
+        raise DatabaseError(
+            "DATABASE_URL을 읽지 못했습니다. Streamlit Secrets 키 이름이 DATABASE_URL 인지 확인하세요."
+        )
+    counts: dict[str, Any] = {}
+    with get_connection() as conn:
+        conn.execute("SELECT 1")
+        for name in MES_TABLES:
+            try:
+                row = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()
+                counts[name] = int(row[0] if row is not None else 0)
+            except Exception as exc:
+                counts[name] = f"오류: {safe_error_text(exc)}"
+    return {
+        "connected": True,
+        "host": "supabase-pooler" if "pooler.supabase.com" in dsn else "postgres",
+        "tables": counts,
+    }
 
 
 class _CompatRow:
@@ -470,37 +514,24 @@ def _connect_postgres() -> _PostgresConnection:
         import psycopg2
     except ImportError as exc:
         raise DatabaseError(
-            "클라우드 DB 연결에 psycopg2가 필요합니다. 터미널에서 pip install psycopg2-binary 를 실행하세요."
+            "클라우드 DB 연결에 psycopg2가 필요합니다. requirements.txt의 psycopg2-binary를 설치하세요."
         ) from exc
-    data = _database_config()
-    host = _cfg_text(data, "host", "hostname", "pooler_host", "db_host")
-    password = _cfg_text(data, "password", "pass", "db_password", "pooler_password")
-    user = _cfg_text(data, "user", "username", "db_user")
-    if host and password and user and not host.startswith("postgres"):
-        kwargs = {
-            "host": host,
-            "port": _cfg_int(data, "port", "pooler_port", default=5432),
-            "dbname": _cfg_text(data, "database", "dbname", "db_name") or "postgres",
-            "user": user,
-            "password": _unwrap_password(password),
-            "sslmode": _cfg_text(data, "sslmode", "ssl") or "require",
-            "connect_timeout": 10,
-        }
-    else:
-        dsn = cloud_dsn()
-        if not dsn:
-            raise DatabaseError("Supabase 접속 정보가 없습니다.")
-        kwargs = _connect_kwargs(dsn)
+    dsn = cloud_dsn()
+    if not dsn:
+        raise DatabaseError(
+            "Supabase DATABASE_URL이 없습니다. Streamlit Secrets에 DATABASE_URL을 넣으세요."
+        )
+    kwargs = _connect_kwargs(dsn)
     if "." not in (kwargs.get("user") or "") and str(kwargs.get("host") or "").endswith("pooler.supabase.com"):
         raise DatabaseError(
-            "Session Pooler 사용자 이름은 postgres.프로젝트ID 형식이어야 합니다. config.json의 database_url을 확인하세요."
+            "Session Pooler 사용자 이름은 postgres.프로젝트ID 형식이어야 합니다. DATABASE_URL을 확인하세요."
         )
     try:
         raw = psycopg2.connect(**kwargs)
     except Exception as exc:
         raise DatabaseError(
-            "Supabase(PostgreSQL Session Pooler)에 연결하지 못했습니다. "
-            "config.json 주소·계정·비밀번호와 네트워크를 확인하세요."
+            "Supabase PostgreSQL에 연결하지 못했습니다. "
+            f"{safe_error_text(exc)}"
         ) from exc
     return _PostgresConnection(raw)
 

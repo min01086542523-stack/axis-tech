@@ -69,11 +69,26 @@ def flash_ok(message: str) -> None:
 
 
 def cloud_badge() -> str:
-    if db.uses_cloud_db():
-        stamp = db.mes_dashboard_updated_at()
-        extra = f" · 스냅샷 {stamp}" if stamp else ""
-        return f"Supabase 연결됨{extra}"
-    return "로컬 SQLite (Secrets에 DATABASE_URL이 없습니다)"
+    try:
+        if db.uses_cloud_db():
+            stamp = db.mes_dashboard_updated_at()
+            extra = f" · 스냅샷 {stamp}" if stamp else ""
+            return f"Supabase 연결됨{extra}"
+        return "로컬 SQLite (Secrets에 DATABASE_URL이 없습니다)"
+    except Exception as exc:
+        return f"DB 오류: {db.safe_error_text(exc)}"
+
+
+def show_error(exc: BaseException) -> None:
+    st.error(db.safe_error_text(exc))
+    st.exception(exc)
+
+
+def run_page(fn) -> None:
+    try:
+        fn()
+    except Exception as exc:
+        show_error(exc)
 
 
 @st.cache_resource
@@ -82,7 +97,7 @@ def _boot_cached(dsn_flag: str) -> bool:
     auth.init_user_db()
     hr_db.init_hr_db()
     billing_db.init_billing_db()
-    if not dsn_flag:
+    if dsn_flag != "cloud":
         db.seed_if_empty()
         hr_db.seed_hr_if_empty()
         billing_db.seed_billing_if_empty()
@@ -91,8 +106,17 @@ def _boot_cached(dsn_flag: str) -> bool:
 
 
 def boot() -> bool:
-    db.apply_runtime_secrets()
-    return _boot_cached(db.cloud_dsn())
+    try:
+        db.apply_runtime_secrets()
+        probe = db.ping_cloud()
+        st.session_state["_db_probe"] = probe
+        _boot_cached("cloud")
+        return True
+    except Exception as exc:
+        st.session_state["_db_error"] = db.safe_error_text(exc)
+        st.error("Supabase 연결에 실패했습니다. Secrets의 DATABASE_URL과 테이블 권한을 확인하세요.")
+        show_error(exc)
+        return False
 
 
 def product_labels(active_only: bool = True, item_type: str | None = None) -> dict[str, int]:
@@ -136,6 +160,8 @@ def require_login() -> dict[str, Any]:
             st.rerun()
         except auth.AuthError as exc:
             st.error(str(exc))
+        except Exception as exc:
+            show_error(exc)
     st.info("기본 계정 예: ceo1234 / ceo1234! · prod / prod1234 · mgmt / mgmt1234")
     st.stop()
     return {}
@@ -146,6 +172,15 @@ def allowed_nav(role: str) -> list[tuple[str, str]]:
 
 
 def page_dashboard_body() -> None:
+    probe = st.session_state.get("_db_probe") or {}
+    tables = probe.get("tables") or {}
+    if tables:
+        st.caption(
+            "테이블 건수  "
+            + " · ".join(f"{name}={tables.get(name)}" for name in (
+                "users", "customers", "products", "production_logs"
+            ))
+        )
     data = dashboard_data.build_dashboard()
     stats = db.dashboard_stats()
     c1, c2, c3, c4 = st.columns(4)
@@ -500,19 +535,17 @@ def page_billing() -> None:
 
 
 def page_settings() -> None:
-    st.caption("Streamlit Cloud → App settings → Secrets 에 데스크톱 MES와 같은 접속값을 넣습니다.")
-    connected = db.uses_cloud_db()
-    st.write("연결 상태:", "Supabase PostgreSQL" if connected else "로컬 SQLite")
+    probe = st.session_state.get("_db_probe") or {}
+    st.write("연결 상태:", "Supabase PostgreSQL" if probe.get("connected") else "실패/로컬")
+    if st.session_state.get("_db_error"):
+        st.error(st.session_state["_db_error"])
     st.write("mes_dashboard 갱신:", db.mes_dashboard_updated_at() or "(없음)")
+    st.json(probe.get("tables") or {})
     st.markdown(
         """
-        Secrets 예시:
-
-        ```toml
-        DATABASE_URL = "postgresql://postgres.PROJECT:PASSWORD@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
-        SUPABASE_URL = "https://PROJECT.supabase.co"
-        SUPABASE_ANON_KEY = "eyJ..."
-        ```
+        PC MES와 같은 테이블: `users`, `customers`, `products`, `production_logs`,
+        `bom`, `inventory`, `hr_employees`, `transaction_statements`.
+        Secrets 키 이름은 `DATABASE_URL` 이어야 합니다.
         """
     )
 
@@ -546,7 +579,8 @@ def page_accounts(user: dict[str, Any]) -> None:
 def main() -> None:
     st.set_page_config(page_title="엑스테크 생산 MES", layout="wide")
     inject_css()
-    boot()
+    if not boot():
+        st.stop()
     user = require_login()
     pages = allowed_nav(user["role"])
     labels = [lab for _k, lab in pages]
@@ -566,29 +600,29 @@ def main() -> None:
     page = st.session_state.page
     st.title(dict(NAV).get(page, page))
     if page == "dashboard":
-        page_dashboard()
+        run_page(page_dashboard)
     elif page == "products":
-        page_products()
+        run_page(page_products)
     elif page == "bom":
-        page_bom()
+        run_page(page_bom)
     elif page == "logs":
-        page_logs()
+        run_page(page_logs)
     elif page == "inventory":
-        page_inventory()
+        run_page(page_inventory)
     elif page == "tools":
-        page_tools()
+        run_page(page_tools)
     elif page == "hr":
-        page_hr()
+        run_page(page_hr)
     elif page == "hr_payroll":
-        page_payroll()
+        run_page(page_payroll)
     elif page == "hr_forms":
-        page_forms()
+        run_page(page_forms)
     elif page == "billing":
-        page_billing()
+        run_page(page_billing)
     elif page == "settings":
-        page_settings()
+        run_page(page_settings)
     elif page == "accounts":
-        page_accounts(user)
+        run_page(lambda: page_accounts(user))
 
 
 if __name__ == "__main__":
