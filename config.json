@@ -1,0 +1,38 @@
+{
+  "database": {
+    "backend": "auto",
+    "host": "aws-0-ap-northeast-2.pooler.supabase.com",
+    "port": 5432,
+    "database": "postgres",
+    "user": "postgres.bhtjwmfdplqxgwdkfelk",
+    "password": "min84352937",
+    "sslmode": "require"
+  },
+  "report": {
+    "enabled": true,
+    "hour": 7,
+    "minute": 0,
+    "send_email": true,
+    "send_sms": true,
+    "send_kakao": true,
+    "send_safety_alerts": true,
+    "email": {
+      "smtp_host": "smtp.gmail.com",
+      "smtp_port": 587,
+      "username": "min01086542523@gmail.com",
+      "password": "ihke ddar jfzd kpqg",
+      "from_addr": "min01086542523@gmail.com",
+      "to_addrs": "hyunmhk@naver.com"
+    },
+    "kakao": {
+      "mode": "solapi",
+      "solapi_api_key": "NCSROZEC2030XB5F",
+      "solapi_api_secret": "A19D3BGSQINTK2YN0NO9NODWDYJR52L8",
+      "from_number": "01086542523",
+      "to_number": "01095782738",
+      "pf_id": "",
+      "template_id": ""
+    }
+  },
+  "database_url": "postgresql://postgres.bhtjwmfdplqxgwdkfelk:min84352937@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"
+}
