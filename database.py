@@ -472,34 +472,79 @@ class _PostgresConnection:
         return False
 
 
-def _connect_kwargs(dsn: str) -> dict[str, Any]:
-    from urllib.parse import parse_qs, unquote
+def _pooler_project_ref(dsn: str = "", user: str = "") -> str:
+    """Session Pooler는 사용자명이 postgres.프로젝트ID 이어야 한다."""
+    text = (user or "").strip()
+    if text.lower().startswith("postgres.") and len(text) > 9:
+        return text.split(".", 1)[1]
+    env_url = os.environ.get("SUPABASE_URL", "") or dsn
+    match = re.search(r"https://([a-z0-9]+)\.supabase\.co", env_url, re.I)
+    if match:
+        return match.group(1)
+    match = re.search(r"postgres\.([a-z0-9]+)", dsn or "", re.I)
+    if match:
+        return match.group(1)
+    cfg_user = _cfg_text(_database_config(), "user", "username", "db_user")
+    if "." in cfg_user:
+        return cfg_user.split(".", 1)[1]
+    return ""
 
-    rest = dsn.split("://", 1)[-1]
-    main, _, query = rest.partition("?")
-    if "@" not in main:
-        raise DatabaseError("database_url 형식이 올바르지 않습니다.")
-    userinfo, _, hostpart = main.rpartition("@")
-    user, _, password = userinfo.partition(":")
-    if "/" in hostpart:
-        hostport, _, dbname = hostpart.partition("/")
-    else:
-        hostport, dbname = hostpart, "postgres"
-    if ":" in hostport:
-        host, port_text = hostport.rsplit(":", 1)
-        port = int(port_text)
-    else:
-        host, port = hostport, 5432
-    sslmode = (parse_qs(query).get("sslmode") or ["require"])[0]
-    return {
-        "host": host,
-        "port": port,
-        "dbname": dbname or "postgres",
-        "user": unquote(user),
-        "password": unquote(_unwrap_password(password)),
-        "sslmode": sslmode,
+
+def _fix_pooler_user(kwargs: dict[str, Any], dsn: str = "") -> dict[str, Any]:
+    host = str(kwargs.get("host") or "")
+    user = str(kwargs.get("user") or "").strip()
+    if "pooler.supabase.com" not in host:
+        return kwargs
+    ref = _pooler_project_ref(dsn, user)
+    if not ref:
+        return kwargs
+    if user in {"", "postgres", "postgres.postgres"} or "." not in user:
+        kwargs["user"] = f"postgres.{ref}"
+    return kwargs
+
+
+def _connect_kwargs(dsn: str) -> dict[str, Any]:
+    from urllib.parse import parse_qs, unquote, urlparse
+
+    parsed = urlparse(dsn)
+    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
+        rest = dsn.split("://", 1)[-1]
+        main, _, query = rest.partition("?")
+        if "@" not in main:
+            raise DatabaseError("database_url 형식이 올바르지 않습니다.")
+        userinfo, _, hostpart = main.rpartition("@")
+        user, _, password = userinfo.partition(":")
+        if "/" in hostpart:
+            hostport, _, dbname = hostpart.partition("/")
+        else:
+            hostport, dbname = hostpart, "postgres"
+        if ":" in hostport:
+            host, port_text = hostport.rsplit(":", 1)
+            port = int(port_text)
+        else:
+            host, port = hostport, 5432
+        sslmode = (parse_qs(query).get("sslmode") or ["require"])[0]
+        kwargs = {
+            "host": host,
+            "port": port,
+            "dbname": (dbname or "postgres").split("?")[0],
+            "user": unquote(user),
+            "password": unquote(_unwrap_password(password)),
+            "sslmode": sslmode,
+            "connect_timeout": 10,
+        }
+        return _fix_pooler_user(kwargs, dsn)
+    query = parse_qs(parsed.query)
+    kwargs = {
+        "host": parsed.hostname,
+        "port": parsed.port or 5432,
+        "dbname": (parsed.path or "/postgres").lstrip("/") or "postgres",
+        "user": unquote(parsed.username or "postgres"),
+        "password": unquote(_unwrap_password(parsed.password or "")),
+        "sslmode": (query.get("sslmode") or ["require"])[0],
         "connect_timeout": 10,
     }
+    return _fix_pooler_user(kwargs, dsn)
 
 
 def _unwrap_password(password: str) -> str:
@@ -521,17 +566,21 @@ def _connect_postgres() -> _PostgresConnection:
         raise DatabaseError(
             "Supabase DATABASE_URL이 없습니다. Streamlit Secrets에 DATABASE_URL을 넣으세요."
         )
-    kwargs = _connect_kwargs(dsn)
-    if "." not in (kwargs.get("user") or "") and str(kwargs.get("host") or "").endswith("pooler.supabase.com"):
-        raise DatabaseError(
-            "Session Pooler 사용자 이름은 postgres.프로젝트ID 형식이어야 합니다. DATABASE_URL을 확인하세요."
-        )
+    kwargs = _fix_pooler_user(_connect_kwargs(dsn), dsn)
     try:
         raw = psycopg2.connect(**kwargs)
     except Exception as exc:
+        msg = safe_error_text(exc)
+        user = kwargs.get("user") or ""
+        if "password authentication failed" in msg.lower() or "user \"postgres\"" in msg:
+            raise DatabaseError(
+                "Supabase 비밀번호 인증에 실패했습니다. "
+                f"현재 사용자명={user}. Session Pooler URL은 "
+                "postgresql://postgres.프로젝트ID:비밀번호@aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require "
+                "형식이어야 합니다. PC MES config.json의 database_url과 Secrets DATABASE_URL을 같게 넣으세요."
+            ) from exc
         raise DatabaseError(
-            "Supabase PostgreSQL에 연결하지 못했습니다. "
-            f"{safe_error_text(exc)}"
+            "Supabase PostgreSQL에 연결하지 못했습니다. " + msg
         ) from exc
     return _PostgresConnection(raw)
 
