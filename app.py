@@ -181,8 +181,19 @@ def page_dashboard_body() -> None:
                 "users", "customers", "products", "production_logs"
             ))
         )
-    data = dashboard_data.build_dashboard()
-    stats = db.dashboard_stats()
+    data: dict[str, Any] = {}
+    try:
+        data = dashboard_data.build_dashboard()
+    except Exception as exc:
+        st.error("대시보드 상세 데이터를 불러오지 못했습니다. 생산 지표는 계속 표시합니다.")
+        st.exception(exc)
+        data = {}
+    try:
+        stats = db.dashboard_stats()
+    except Exception as exc:
+        st.error("생산 지표를 불러오지 못했습니다.")
+        st.exception(exc)
+        return
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("활성 품목", f"{stats['product_count']:,}")
     c2.metric("오늘 생산", f"{stats['today_qty']:,}")
@@ -200,10 +211,14 @@ def page_dashboard_body() -> None:
 
 def page_dashboard() -> None:
     st.caption("PC 생산 MES와 같은 `products` · `production_logs` · `customers` · `users` 테이블을 사용합니다.")
-    if hasattr(st, "fragment"):
-        st.fragment(run_every=5)(page_dashboard_body)()
-    else:
-        page_dashboard_body()
+    try:
+        if hasattr(st, "fragment"):
+            st.fragment(run_every=5)(page_dashboard_body)()
+        else:
+            page_dashboard_body()
+    except Exception as exc:
+        st.error("대시보드 화면을 표시하는 중 오류가 났습니다.")
+        st.exception(exc)
 
 
 def page_products() -> None:

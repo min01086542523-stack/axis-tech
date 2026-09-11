@@ -24,6 +24,20 @@ def _txt(row: Any, key: str, default: str = "") -> str:
     return default if value is None else str(value)
 
 
+def _company_label(code: str) -> str:
+    fn = getattr(hr_db, "contract_company_label", None)
+    if callable(fn):
+        try:
+            return fn(code) or ""
+        except Exception:
+            return ""
+    companies = getattr(hr_db, "CONTRACT_COMPANIES", {}) or {}
+    try:
+        return str(companies.get(str(code or "").strip(), "") or "")
+    except Exception:
+        return ""
+
+
 def _num(row: Any, key: str) -> float:
     if row is None or key not in row.keys():
         return 0.0
@@ -192,10 +206,12 @@ def build_dashboard() -> dict[str, Any]:
             "hire": _txt(row, "snap_hire_date") or str(payload.get("form_hire") or payload.get("hire_date") or ""),
             "status": "발행",
             "company_code": code,
-            "company": hr_db.contract_company_label(code) or _txt(row, "title") or hr_db.DOC_TYPES.get(dtype, dtype),
+            "company": _company_label(code) or _txt(row, "title") or hr_db.DOC_TYPES.get(dtype, dtype),
             "title": _txt(row, "title"),
             "daily_wage": daily_wage,
-            "econtract": bool(payload.get("econtract")) or code in hr_db.ELECTRONIC_CONTRACT_CODES,
+            "econtract": bool(payload.get("econtract")) or code in getattr(
+                hr_db, "ELECTRONIC_CONTRACT_CODES", frozenset()
+            ),
             "esign": bool(payload.get("esign")) or dtype in {
                 "CERT_EMPLOYMENT", "RESIGNATION", "VACATION_PLAN", "EXPENSE_REQUEST",
             },
