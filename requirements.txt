@@ -5,5 +5,4 @@ matplotlib>=3.8.0
 cryptography>=42.0.0
 psycopg2-binary>=2.9.0
 pillow>=10.0.0
-customtkinter>=5.2.0
 supabase>=2.9.0

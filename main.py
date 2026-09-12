@@ -14,7 +14,7 @@ import tkinter as tk
 import customtkinter as ctk
 
 import auth
-import accounts_ui
+import accounts_desktop
 import billing_database as billing_db
 import billing_ui
 import brand
@@ -60,7 +60,7 @@ EXTRA_PAGES = (
     ("hr_forms", lambda host, app: hr_ui.HrFormsPage(host, app)),
     ("billing", lambda host, app: billing_ui.BillingPage(host, app)),
     ("settings", lambda host, app: SettingsPage(host, app)),
-    ("accounts", lambda host, app: accounts_ui.AccountsPage(host, app)),
+    ("accounts", lambda host, app: accounts_desktop.AccountsPage(host, app)),
 )
 
 

@@ -1,0 +1,3 @@
+# PC 데스크톱(CustomTkinter) 실행용. Streamlit Cloud는 requirements.txt 만 사용합니다.
+-r requirements.txt
+customtkinter>=5.2.0

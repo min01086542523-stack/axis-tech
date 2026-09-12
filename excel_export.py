@@ -7,12 +7,18 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from typing import Any
 
 OUTPUT_DIR = Path(__file__).resolve().parent / "서식출력"
 _CREATE_NO_WINDOW = 0x08000000
 _XL_NORMAL_VIEW = 1
 _XL_MAXIMIZED = -4137
+
+
+def _messagebox():
+    from tkinter import messagebox
+
+    return messagebox
 
 
 def default_export_path(default_name: str) -> Path:
@@ -174,7 +180,7 @@ def export_sheets_to_xlsx(parent, default_name: str, sheets: tuple) -> None:
         from openpyxl.styles import Alignment, Font, PatternFill
         from openpyxl.utils import get_column_letter
     except ImportError:
-        messagebox.showerror(
+        _messagebox().showerror(
             "엑셀 내보내기",
             "openpyxl 패키지가 필요합니다.\n터미널에서 pip install openpyxl 을 실행하세요.",
             parent=parent,
@@ -182,7 +188,7 @@ def export_sheets_to_xlsx(parent, default_name: str, sheets: tuple) -> None:
         return
 
     if not any(sheet[2] for sheet in sheets):
-        messagebox.showwarning("엑셀 내보내기", "내보낼 데이터가 없습니다.", parent=parent)
+        _messagebox().showwarning("엑셀 내보내기", "내보낼 데이터가 없습니다.", parent=parent)
         return
 
     path = default_export_path(default_name)
@@ -221,7 +227,7 @@ def export_sheets_to_xlsx(parent, default_name: str, sheets: tuple) -> None:
         workbook.save(path)
         open_exported(path)
     except OSError as exc:
-        messagebox.showwarning(
+        _messagebox().showwarning(
             "열기",
             f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}",
             parent=parent,
@@ -229,7 +235,7 @@ def export_sheets_to_xlsx(parent, default_name: str, sheets: tuple) -> None:
 
 
 def export_tree_to_xlsx(
-    tree: ttk.Treeview,
+    tree: Any,
     parent,
     default_name: str,
     numeric_columns: set[str] | None = None,

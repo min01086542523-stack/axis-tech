@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+import accounts_ui
 import auth
 import billing_database as billing_db
 import database as db
@@ -580,29 +581,7 @@ def page_settings() -> None:
 
 
 def page_accounts(user: dict[str, Any]) -> None:
-    if not auth.is_ceo(user["role"]):
-        st.error("계정 관리는 대표이사만 할 수 있습니다.")
-        return
-    df = rows_df(auth.fetch_users())
-    if not df.empty and "role" in df.columns:
-        df["권한"] = df["role"].map(auth.role_label)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    with st.form("new_user"):
-        uid = st.text_input("아이디")
-        pw = st.text_input("초기 비밀번호", type="password")
-        name = st.text_input("성명")
-        dept = st.text_input("부서")
-        title = st.selectbox("직함", list(auth.JOB_TITLES))
-        role_label = st.selectbox("권한", [lab for _k, lab in auth.ROLE_CHOICES])
-        submitted = st.form_submit_button("계정 등록")
-    if submitted:
-        role_key = {lab: k for k, lab in auth.ROLE_CHOICES}[role_label]
-        try:
-            auth.create_user(uid, pw, name, dept, role_key, title, actor_id=user["id"])
-            flash_ok("계정을 등록했습니다.")
-            st.rerun()
-        except auth.AuthError as exc:
-            st.error(str(exc))
+    accounts_ui.render_accounts_page(user)
 
 
 def main() -> None:
