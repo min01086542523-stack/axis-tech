@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import date, datetime
 from io import BytesIO
 from typing import Any
@@ -57,19 +58,28 @@ def to_excel_bytes(df: pd.DataFrame, sheet: str = "data") -> bytes:
     return buf.getvalue()
 
 
-def notify_cloud() -> None:
+def notify_cloud(*, wait: bool = False) -> None:
+    """휴대폰 대시보드(mes_dashboard) 스냅샷 갱신. 기본은 백그라운드."""
     if not db.uses_cloud_db():
         return
-    try:
-        dashboard_data.sync_to_cloud()
-    except Exception:
-        pass
+
+    def work() -> None:
+        try:
+            dashboard_data.sync_to_cloud()
+        except Exception:
+            pass
+
+    if wait:
+        work()
+        return
+    threading.Thread(target=work, daemon=True).start()
 
 
 def flash_ok(message: str) -> None:
-    """저장 후 Supabase 스냅샷을 올리고 화면을 갱신한다."""
-    notify_cloud()
+    """화면을 먼저 갱신하고, 클라우드 동기화는 백그라운드에서 수행."""
     st.session_state["_flash"] = message
+    _clear_data_caches()
+    notify_cloud(wait=False)
     st.rerun()
 
 
@@ -82,9 +92,9 @@ def show_flash() -> None:
 def cloud_badge() -> str:
     try:
         if db.uses_cloud_db():
-            stamp = st.session_state.get("_mobile_stamp") or db.mes_dashboard_updated_at()
+            stamp = st.session_state.get("_mobile_stamp") or ""
             synced = st.session_state.get("_mobile_sync")
-            extra = f" · PC·웹 동기화 {stamp}" if stamp else ""
+            extra = f" · 동기화 {stamp}" if stamp else ""
             if synced is False:
                 extra += " · 동기화 실패"
             return f"Supabase 연결됨{extra}"
@@ -119,20 +129,42 @@ def _boot_cached(dsn_flag: str) -> bool:
     return True
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_dashboard_stats() -> dict[str, Any]:
+    return db.dashboard_stats()
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_recent_logs(limit: int = 25) -> pd.DataFrame:
+    return rows_df(db.fetch_production_logs(limit=limit))
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_stock() -> pd.DataFrame:
+    return rows_df(db.fetch_inventory())
+
+
+def _clear_data_caches() -> None:
+    try:
+        _cached_dashboard_stats.clear()
+        _cached_recent_logs.clear()
+        _cached_stock.clear()
+    except Exception:
+        pass
+
+
 def boot() -> bool:
+    """빠른 기동: 연결 확인 + 스키마 캐시만. 전체 대시보드 빌드/동기화는 하지 않는다."""
+    if st.session_state.get("_boot_ok"):
+        return True
     try:
         db.apply_runtime_secrets()
-        probe = db.ping_cloud()
+        probe = db.quick_ping()
         st.session_state["_db_probe"] = probe
         cloud = "cloud" if db.uses_cloud_db() else "local"
         _boot_cached(cloud)
-        try:
-            dashboard_data.sync_to_cloud()
-            st.session_state["_mobile_sync"] = True
-            st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
-        except Exception as sync_exc:
-            st.session_state["_mobile_sync"] = False
-            st.session_state["_mobile_sync_error"] = db.safe_error_text(sync_exc)
+        st.session_state["_boot_ok"] = True
+        st.session_state["_mobile_sync"] = True
         return True
     except Exception as exc:
         st.session_state["_db_error"] = db.safe_error_text(exc)
@@ -211,41 +243,19 @@ def allowed_nav(role: str) -> list[tuple[str, str]]:
 
 
 def render_sidebar_nav(pages: list[tuple[str, str]], current: str) -> str:
-    """모바일에서 메뉴가 잘 보이도록 버튼형 사이드바."""
-    st.markdown("### 메뉴")
-    for key, label in pages:
-        active = key == current
-        if st.button(
-            label,
-            key=f"nav_{key}",
-            type="primary" if active else "secondary",
-            use_container_width=True,
-        ):
-            st.session_state.page = key
-            st.rerun()
-    return st.session_state.get("page") or current
+    """selectbox 1개로 메뉴 전환 (버튼 12개보다 휴대폰 렌더가 빠름)."""
+    labels = [lab for _k, lab in pages]
+    keys = [k for k, _lab in pages]
+    idx = keys.index(current) if current in keys else 0
+    choice = st.selectbox("메뉴", labels, index=idx, key="nav_select")
+    st.session_state.page = keys[labels.index(choice)]
+    return st.session_state.page
 
 
-def page_dashboard_body() -> None:
-    probe = st.session_state.get("_db_probe") or {}
-    tables = probe.get("tables") or {}
-    if tables:
-        st.caption(
-            "테이블 건수  "
-            + " · ".join(
-                f"{name}={tables.get(name)}"
-                for name in ("users", "customers", "products", "production_logs")
-            )
-        )
-    data: dict[str, Any] = {}
+def page_dashboard() -> None:
+    st.caption("PC 생산 MES와 같은 Supabase를 사용합니다. (빠른 조회 모드)")
     try:
-        data = dashboard_data.build_dashboard()
-    except Exception as exc:
-        st.error("대시보드 상세 데이터를 불러오지 못했습니다. 생산 지표는 계속 표시합니다.")
-        st.exception(exc)
-        data = {}
-    try:
-        stats = db.dashboard_stats()
+        stats = _cached_dashboard_stats()
     except Exception as exc:
         st.error("생산 지표를 불러오지 못했습니다.")
         st.exception(exc)
@@ -258,27 +268,16 @@ def page_dashboard_body() -> None:
     d1, d2 = st.columns(2)
     d1.metric("이번달 생산", f"{stats['month_qty']:,}")
     d2.metric("이번달 출하", f"{stats['month_ship']:,g}")
-    prod = data.get("production") or {}
     st.subheader("최근 생산")
-    st.dataframe(pd.DataFrame(prod.get("logs") or []), use_container_width=True, hide_index=True)
+    st.dataframe(_cached_recent_logs(25), use_container_width=True, hide_index=True)
     st.subheader("현재고")
-    st.dataframe(pd.DataFrame(prod.get("stock") or []), use_container_width=True, hide_index=True)
+    st.dataframe(_cached_stock(), use_container_width=True, hide_index=True)
     if st.button("지금 동기화", key="dash_sync"):
-        notify_cloud()
-        st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
+        with st.spinner("동기화 중…"):
+            notify_cloud(wait=True)
+            st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
+            _clear_data_caches()
         st.success("클라우드 대시보드를 갱신했습니다.")
-
-
-def page_dashboard() -> None:
-    st.caption("PC 생산 MES와 같은 Supabase 테이블을 실시간으로 공유합니다.")
-    try:
-        if hasattr(st, "fragment"):
-            st.fragment(run_every=5)(page_dashboard_body)()
-        else:
-            page_dashboard_body()
-    except Exception as exc:
-        st.error("대시보드 화면을 표시하는 중 오류가 났습니다.")
-        st.exception(exc)
 
 
 def page_products() -> None:
@@ -871,12 +870,19 @@ def page_billing() -> None:
 def page_settings() -> None:
     probe = st.session_state.get("_db_probe") or {}
     st.write("연결 상태:", "Supabase PostgreSQL" if probe.get("connected") else "실패/로컬")
-    st.write("mes_dashboard 갱신:", db.mes_dashboard_updated_at() or "(없음)")
     st.caption("PC MES · 웹 · 휴대폰이 같은 DATABASE_URL(Supabase)을 사용합니다.")
     if st.button("클라우드 대시보드 지금 동기화"):
-        notify_cloud()
-        st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
+        with st.spinner("동기화 중…"):
+            notify_cloud(wait=True)
+            st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
+            _clear_data_caches()
         st.success("동기화했습니다.")
+    if st.button("DB 테이블 건수 새로고침"):
+        with st.spinner("조회 중…"):
+            st.session_state["_db_probe"] = db.ping_cloud()
+        st.rerun()
+    stamp = st.session_state.get("_mobile_stamp") or db.mes_dashboard_updated_at()
+    st.write("mes_dashboard 갱신:", stamp or "(없음)")
 
     cfg = app_config.load_config()
     report = cfg.get("report") or {}
@@ -949,7 +955,11 @@ def page_settings() -> None:
                 pass
             flash_ok("리포트 설정을 저장했습니다.")
     with st.expander("DB 테이블 건수"):
-        st.json(probe.get("tables") or {})
+        tables = (st.session_state.get("_db_probe") or {}).get("tables") or {}
+        if tables:
+            st.json(tables)
+        else:
+            st.caption("위 'DB 테이블 건수 새로고침'을 누르면 표시됩니다.")
 
 
 def page_accounts(user: dict[str, Any]) -> None:
@@ -976,7 +986,7 @@ def main() -> None:
         st.markdown(f"**{user.get('display_name', '')}**")
         st.caption(auth.profile_label(user["role"], user.get("job_title") or ""))
         st.caption(cloud_badge())
-        st.caption("PC와 같은 Supabase · 전체 메뉴 사용 가능")
+        st.caption("PC와 같은 Supabase · 빠른 조회")
         current = render_sidebar_nav(pages, current)
         if st.button("로그아웃", use_container_width=True):
             st.session_state.clear()

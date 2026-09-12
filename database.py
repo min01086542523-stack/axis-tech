@@ -268,28 +268,38 @@ def safe_error_text(exc: BaseException) -> str:
     return text or exc.__class__.__name__
 
 
-def ping_cloud() -> dict[str, Any]:
-    """Secrets/DSN으로 실제 Postgres에 접속하고 MES 테이블 건수를 확인한다."""
+def quick_ping() -> dict[str, Any]:
+    """연결만 빠르게 확인한다. COUNT(*) 전수 조회는 하지 않는다."""
     apply_runtime_secrets()
     dsn = cloud_dsn()
     if not dsn:
         raise DatabaseError(
             "DATABASE_URL을 읽지 못했습니다. Streamlit Secrets 키 이름이 DATABASE_URL 인지 확인하세요."
         )
-    counts: dict[str, Any] = {}
     with get_connection() as conn:
         conn.execute("SELECT 1")
+    return {
+        "connected": True,
+        "host": "supabase-pooler" if "pooler.supabase.com" in dsn else "postgres",
+        "tables": {},
+    }
+
+
+def ping_cloud() -> dict[str, Any]:
+    """Secrets/DSN으로 실제 Postgres에 접속하고 MES 테이블 건수를 확인한다."""
+    probe = quick_ping()
+    dsn = cloud_dsn() or ""
+    counts: dict[str, Any] = {}
+    with get_connection() as conn:
         for name in MES_TABLES:
             try:
                 row = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()
                 counts[name] = int(row[0] if row is not None else 0)
             except Exception as exc:
                 counts[name] = f"오류: {safe_error_text(exc)}"
-    return {
-        "connected": True,
-        "host": "supabase-pooler" if "pooler.supabase.com" in dsn else "postgres",
-        "tables": counts,
-    }
+    probe["tables"] = counts
+    probe["host"] = "supabase-pooler" if "pooler.supabase.com" in dsn else "postgres"
+    return probe
 
 
 class _CompatRow:
