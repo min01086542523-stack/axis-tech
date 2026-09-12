@@ -595,9 +595,73 @@ def _connect_postgres() -> _PostgresConnection:
     return _PostgresConnection(raw)
 
 
+def _dsn_fingerprint() -> str:
+    """캐시 키용. 비밀번호 없이 프로젝트 식별만 한다."""
+    dsn = ""
+    try:
+        dsn = cloud_dsn() or ""
+    except Exception:
+        dsn = ""
+    if not dsn:
+        return "local"
+    m = re.search(r"postgres\.([a-z0-9]+)", dsn, re.I)
+    if m:
+        return f"pg:{m.group(1)}"
+    m = re.search(r"@([^/:?]+)", dsn)
+    return f"host:{(m.group(1) if m else 'cloud')[:40]}"
+
+
+def live_link_status() -> dict[str, Any]:
+    """PC MES와 같은 DB인지 휴대폰 화면에 바로 보여줄 상태."""
+    apply_runtime_secrets()
+    cloud = uses_cloud_db()
+    out: dict[str, Any] = {
+        "cloud": cloud,
+        "fingerprint": _dsn_fingerprint(),
+        "product_count": 0,
+        "log_count": 0,
+        "stamp": "",
+        "ok": False,
+        "message": "",
+    }
+    if not cloud:
+        out["message"] = "미연결: Secrets/DATABASE_URL이 PC config.json과 같아야 합니다."
+        return out
+    try:
+        with get_connection() as conn:
+            out["product_count"] = int(
+                conn.execute("SELECT COUNT(*) FROM products").fetchone()[0] or 0
+            )
+            out["log_count"] = int(
+                conn.execute("SELECT COUNT(*) FROM production_logs").fetchone()[0] or 0
+            )
+        out["stamp"] = mes_dashboard_updated_at()
+        out["ok"] = True
+        out["message"] = (
+            f"PC 연동됨 · 품목 {out['product_count']} · 생산 {out['log_count']}"
+            + (f" · 동기화 {out['stamp']}" if out["stamp"] else "")
+        )
+    except Exception as exc:
+        out["message"] = f"연결 오류: {safe_error_text(exc)}"
+    return out
+
+
 def get_connection() -> sqlite3.Connection | _PostgresConnection:
     if cloud_dsn():
         return _connect_postgres()
+    # Streamlit 웹(휴대폰)에서는 빈 로컬 DB로 조용히 떨어지지 않게 한다.
+    try:
+        from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+        if get_script_run_ctx() is not None and os.environ.get("MES_ALLOW_SQLITE", "").strip() != "1":
+            raise DatabaseError(
+                "웹·휴대폰 MES는 Supabase만 사용합니다. "
+                "Streamlit Cloud Secrets에 PC MES config.json과 같은 DATABASE_URL을 넣으세요."
+            )
+    except DatabaseError:
+        raise
+    except Exception:
+        pass
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

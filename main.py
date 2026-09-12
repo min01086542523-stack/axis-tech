@@ -610,6 +610,14 @@ class App(ctk.CTk):
             self._cloud_sync_after_id = None
 
     def _open_streamlit_app(self) -> None:
+        # 휴대폰에서 최신 PC 데이터가 보이도록 먼저 클라우드에 올린다.
+        try:
+            self._set_cloud_status("웹 MES 동기화 중…")
+            dashboard_data.sync_to_cloud()
+            stamp = db.mes_dashboard_updated_at() or ""
+            self._set_cloud_status(f"웹 MES 동기화 {stamp}" if stamp else "웹 MES 동기화 완료")
+        except Exception as err:
+            self._set_cloud_status(f"동기화 실패: {err}")
         webbrowser.open(dashboard_data.STREAMLIT_APP_URL)
 
     def _open_mobile_dashboard(self) -> None:
