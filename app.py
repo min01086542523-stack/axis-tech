@@ -59,7 +59,7 @@ def notify_cloud() -> None:
     if not db.uses_cloud_db():
         return
     try:
-        db.publish_mobile_dashboard(dashboard_data.build_dashboard())
+        dashboard_data.sync_to_cloud()
     except Exception:
         pass
 
@@ -74,7 +74,7 @@ def cloud_badge() -> str:
         if db.uses_cloud_db():
             stamp = st.session_state.get("_mobile_stamp") or db.mes_dashboard_updated_at()
             synced = st.session_state.get("_mobile_sync")
-            extra = f" · 휴대폰 동기화 {stamp}" if stamp else ""
+            extra = f" · PC·웹 동기화 {stamp}" if stamp else ""
             if synced is False:
                 extra += " · 동기화 실패"
             return f"Supabase 연결됨{extra}"
@@ -117,8 +117,8 @@ def boot() -> bool:
         cloud = "cloud" if db.uses_cloud_db() else "local"
         _boot_cached(cloud)
         try:
-            ok = db.publish_mobile_dashboard(dashboard_data.build_dashboard())
-            st.session_state["_mobile_sync"] = bool(ok)
+            dashboard_data.sync_to_cloud()
+            st.session_state["_mobile_sync"] = True
             st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
         except Exception as sync_exc:
             st.session_state["_mobile_sync"] = False
@@ -600,10 +600,10 @@ def main() -> None:
         st.markdown(f"**{user.get('display_name', '')}**")
         st.caption(auth.profile_label(user["role"], user.get("job_title") or ""))
         st.caption(cloud_badge())
-        st.caption("PC 생산 MES · 휴대폰 대시보드와 같은 Supabase입니다.")
+        st.caption("PC 생산 MES와 이 웹앱이 같은 Supabase를 씁니다.")
         st.markdown(
-            "[휴대폰 MES](https://mes-mhk-6.vercel.app/) · "
-            "[웹 MES](https://axis-tech-n8xg6ren3aaks7dyv2q8f2.streamlit.app/)"
+            f"[이 웹 MES]({dashboard_data.STREAMLIT_APP_URL}) · "
+            f"[휴대폰 대시보드]({dashboard_data.MOBILE_APP_URL})"
         )
         choice = st.radio("메뉴", labels, index=keys.index(current))
         st.session_state.page = keys[labels.index(choice)]

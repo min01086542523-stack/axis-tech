@@ -1,4 +1,4 @@
-"""생산 MES 데이터를 휴대폰 대시보드(mes-mhk)용 JSON으로 만든다."""
+"""생산 MES 데이터를 웹·휴대폰 대시보드용 JSON으로 만든다."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import hr_database as hr_db
 
 DASHBOARD_DIR = Path(r"C:\Users\ss\Desktop\mes-mhk")
 DATA_PATH = DASHBOARD_DIR / "data.json"
+STREAMLIT_APP_URL = "https://axis-tech-n8xg6ren3aaks7dyv2q8f2.streamlit.app/"
+MOBILE_APP_URL = "https://mes-mhk-6.vercel.app/"
 
 
 def _txt(row: Any, key: str, default: str = "") -> str:
@@ -294,8 +296,8 @@ def build_dashboard() -> dict[str, Any]:
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "today": today,
         "links": {
-            "streamlit": "https://axis-tech-n8xg6ren3aaks7dyv2q8f2.streamlit.app/",
-            "mobile": "https://mes-mhk-6.vercel.app/",
+            "streamlit": STREAMLIT_APP_URL,
+            "mobile": MOBILE_APP_URL,
             "salon": "https://hueh-salon.vercel.app/",
         },
         "econtract": {
@@ -391,12 +393,18 @@ def _sync_econtract_files() -> None:
             (DASHBOARD_DIR / name).write_bytes(src.read_bytes())
 
 
+def sync_to_cloud() -> dict[str, Any]:
+    """PC·Streamlit·휴대폰이 같은 Supabase mes_dashboard를 보도록 스냅샷을 올린다."""
+    payload = build_dashboard()
+    db.publish_mobile_dashboard(payload)
+    return payload
+
+
 def export_json(path: Path | None = None) -> Path:
     target = path or DATA_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = build_dashboard()
+    payload = sync_to_cloud()
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    db.publish_mobile_dashboard(payload)
     _sync_index_html(payload)
     _sync_econtract_files()
     return target

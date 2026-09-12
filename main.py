@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import traceback
+import webbrowser
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -20,6 +21,7 @@ import billing_ui
 import brand
 import charts
 import config as app_config
+import dashboard_data
 import database as db
 from excel_export import (
     export_sheets_to_xlsx as _export_sheets_to_xlsx,
@@ -262,6 +264,9 @@ class App(ctk.CTk):
         self.user: dict | None = None
         self._user_id_label: ctk.CTkLabel | None = None
         self._user_role_label: ctk.CTkLabel | None = None
+        self._cloud_status_label: ctk.CTkLabel | None = None
+        self._cloud_sync_after_id: str | None = None
+        self._cloud_period_id: str | None = None
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._pages: dict[str, ctk.CTkFrame] = {}
         self._current_page = ""
@@ -415,12 +420,14 @@ class App(ctk.CTk):
         self._page_host = None
         self._user_id_label = None
         self._user_role_label = None
+        self._cloud_status_label = None
         self._shell.grid_columnconfigure(0, weight=0)
         self._shell.grid_columnconfigure(1, weight=0)
         self._shell.grid_rowconfigure(0, weight=0)
 
     def _show_login(self) -> None:
         self._disarm_idle_watch()
+        self._disarm_cloud_sync()
         self.user = None
         self._scheduler.stop()
         self._keep_withdrawn = True
@@ -530,6 +537,83 @@ class App(ctk.CTk):
             _log_startup_error(err)
         threading.Thread(target=self._start_background_services, daemon=True).start()
         self.after(700, lambda: self._check_safety_stock_alerts(show_dialog=True))
+        self.notify_cloud_sync(delay_ms=300)
+        self._arm_cloud_period()
+
+    def notify_cloud_sync(self, *, delay_ms: int = 1200) -> None:
+        """데이터 변경 후 Streamlit·휴대폰과 같은 Supabase 스냅샷을 올린다."""
+        if self._cloud_sync_after_id is not None:
+            try:
+                self.after_cancel(self._cloud_sync_after_id)
+            except Exception:
+                pass
+            self._cloud_sync_after_id = None
+        if delay_ms <= 0:
+            self._run_cloud_sync()
+            return
+        self._cloud_sync_after_id = self.after(delay_ms, self._run_cloud_sync)
+
+    def _run_cloud_sync(self) -> None:
+        self._cloud_sync_after_id = None
+        if self.user is None:
+            return
+        self._set_cloud_status("웹 MES 동기화 중…")
+
+        def work() -> None:
+            try:
+                if not db.uses_cloud_db():
+                    text = "로컬 DB (Secrets/DATABASE_URL 없음)"
+                else:
+                    dashboard_data.sync_to_cloud()
+                    stamp = db.mes_dashboard_updated_at() or ""
+                    text = f"웹 MES 동기화 {stamp}" if stamp else "웹 MES 동기화 완료"
+            except Exception as err:
+                text = f"동기화 실패: {err}"
+            self.after(0, lambda t=text: self._set_cloud_status(t))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _set_cloud_status(self, text: str) -> None:
+        if self._cloud_status_label is not None:
+            try:
+                self._cloud_status_label.configure(text=text)
+            except Exception:
+                pass
+
+    def _arm_cloud_period(self) -> None:
+        self._disarm_cloud_period()
+
+        def tick() -> None:
+            self._cloud_period_id = None
+            if self.user is None:
+                return
+            self.notify_cloud_sync(delay_ms=0)
+            self._cloud_period_id = self.after(60_000, tick)
+
+        self._cloud_period_id = self.after(60_000, tick)
+
+    def _disarm_cloud_period(self) -> None:
+        if self._cloud_period_id is not None:
+            try:
+                self.after_cancel(self._cloud_period_id)
+            except Exception:
+                pass
+            self._cloud_period_id = None
+
+    def _disarm_cloud_sync(self) -> None:
+        self._disarm_cloud_period()
+        if self._cloud_sync_after_id is not None:
+            try:
+                self.after_cancel(self._cloud_sync_after_id)
+            except Exception:
+                pass
+            self._cloud_sync_after_id = None
+
+    def _open_streamlit_app(self) -> None:
+        webbrowser.open(dashboard_data.STREAMLIT_APP_URL)
+
+    def _open_mobile_dashboard(self) -> None:
+        webbrowser.open(dashboard_data.MOBILE_APP_URL)
 
     def apply_renamed_login(
         self,
@@ -600,6 +684,23 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=11),
         )
         self._user_role_label.pack(anchor="w", pady=(0, 8))
+        self._cloud_status_label = ctk.CTkLabel(
+            footer,
+            text="웹 MES 연동 대기",
+            text_color=("gray45", "gray60"),
+            font=ctk.CTkFont(size=10),
+            wraplength=180,
+            justify="left",
+        )
+        self._cloud_status_label.pack(anchor="w", pady=(0, 6))
+        ctk.CTkButton(
+            footer,
+            text="웹·휴대폰 MES 열기",
+            height=32,
+            fg_color="transparent",
+            border_width=1,
+            command=self._open_streamlit_app,
+        ).pack(fill="x", pady=(0, 6))
         ctk.CTkButton(
             footer,
             text="아이디·비밀번호",
@@ -779,11 +880,14 @@ class App(ctk.CTk):
                 page.refresh()
         self._check_safety_stock_alerts(show_dialog=False)
         try:
-            import dashboard_data
-
             dashboard_data.export_json()
-        except Exception:
-            pass
+            stamp = db.mes_dashboard_updated_at() or ""
+            self._set_cloud_status(
+                f"웹 MES 동기화 {stamp}" if stamp else "웹 MES 동기화 완료"
+            )
+        except Exception as err:
+            self._set_cloud_status(f"동기화 실패: {err}")
+            self.notify_cloud_sync(delay_ms=500)
 
     def _check_safety_stock_alerts(self, show_dialog: bool = False) -> None:
         try:
