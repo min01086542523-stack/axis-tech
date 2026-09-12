@@ -58,8 +58,8 @@ def to_excel_bytes(df: pd.DataFrame, sheet: str = "data") -> bytes:
     return buf.getvalue()
 
 
-def notify_cloud(*, wait: bool = True) -> None:
-    """PC·휴대폰이 같은 mes_dashboard/테이블을 보도록 스냅샷 갱신."""
+def notify_cloud(*, wait: bool = False) -> None:
+    """Vercel 휴대폰 대시보드용 스냅샷. PC↔Streamlit은 같은 Postgres를 직접 쓰므로 필수는 아님."""
     if not db.uses_cloud_db():
         return
 
@@ -76,11 +76,11 @@ def notify_cloud(*, wait: bool = True) -> None:
 
 
 def flash_ok(message: str) -> None:
-    """저장 후 PC와 같은 DB 스냅샷을 맞춘 뒤 화면을 갱신한다."""
+    """저장 직후 화면만 갱신. PC와는 같은 Supabase 테이블로 즉시 공유된다."""
     st.session_state["_flash"] = message
     _clear_data_caches()
-    notify_cloud(wait=True)
-    st.session_state["_link_status"] = db.live_link_status()
+    st.session_state.pop("_link_status", None)
+    notify_cloud(wait=False)
     st.rerun()
 
 
@@ -116,34 +116,32 @@ def run_page(fn) -> None:
 
 @st.cache_resource
 def _boot_cached(dsn_flag: str) -> bool:
+    # init_db가 auth/hr/billing까지 한 번에 처리한다 (중복 호출 제거)
     db.init_db()
-    auth.init_user_db()
-    hr_db.init_hr_db()
-    billing_db.init_billing_db()
     if dsn_flag != "cloud":
         db.seed_if_empty()
         hr_db.seed_hr_if_empty()
         billing_db.seed_billing_if_empty()
-    db.link_production_workers()
+        db.link_production_workers()
     return True
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def _cached_dashboard_stats(fp: str) -> dict[str, Any]:
     return db.dashboard_stats()
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def _cached_recent_logs(fp: str, limit: int = 25) -> pd.DataFrame:
     return rows_df(db.fetch_production_logs(limit=limit))
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def _cached_stock(fp: str) -> pd.DataFrame:
     return rows_df(db.fetch_inventory())
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def _cached_link_status(fp: str) -> dict[str, Any]:
     return db.live_link_status()
 
@@ -159,38 +157,45 @@ def _clear_data_caches() -> None:
 
 
 def boot() -> bool:
-    """매 실행마다 secrets를 적용하고, PC와 같은 Supabase인지 확인한다."""
+    """세션당 1회만 DB 기동. PC와 같은 Supabase(DATABASE_URL)를 강제한다."""
+    db.apply_runtime_secrets()
+    if st.session_state.get("_boot_ok"):
+        return True
     try:
-        db.apply_runtime_secrets()
         if not db.uses_cloud_db():
-            st.session_state["_db_error"] = "DATABASE_URL 없음"
             st.error(
-                "휴대폰 웹 MES가 PC와 연동되려면 Streamlit Secrets에 "
-                "PC `config.json`과 같은 `DATABASE_URL`이 필요합니다."
+                "휴대폰 웹이 PC와 연동되려면 Streamlit Secrets에 "
+                "PC와 같은 `DATABASE_URL`이 필요합니다."
             )
             st.code(
                 'DATABASE_URL = "postgresql://postgres.PROJECT:PASSWORD@'
                 'aws-0-ap-northeast-2.pooler.supabase.com:5432/postgres?sslmode=require"'
             )
             return False
-        probe = db.quick_ping()
-        st.session_state["_db_probe"] = probe
         _boot_cached("cloud")
-        if not st.session_state.get("_cache_ready"):
-            _clear_data_caches()
-            st.session_state["_cache_ready"] = True
-        fp = db._dsn_fingerprint()
-        status = _cached_link_status(fp)
-        st.session_state["_link_status"] = status
-        st.session_state["_mobile_sync"] = bool(status.get("ok"))
-        st.session_state["_mobile_stamp"] = status.get("stamp") or ""
         st.session_state["_boot_ok"] = True
+        st.session_state["_mobile_sync"] = True
         return True
     except Exception as exc:
         st.session_state["_db_error"] = db.safe_error_text(exc)
-        st.error("Supabase 연결에 실패했습니다. Secrets의 DATABASE_URL과 테이블 권한을 확인하세요.")
+        st.error("Supabase 연결에 실패했습니다. Secrets의 DATABASE_URL을 PC config.json과 같게 넣으세요.")
         show_error(exc)
         return False
+
+
+def ensure_link_status(*, force: bool = False) -> dict[str, Any]:
+    """로그인 후 PC 연동 상태를 가볍게 표시 (15초 캐시)."""
+    if not force and isinstance(st.session_state.get("_link_status"), dict):
+        return st.session_state["_link_status"]
+    fp = db._dsn_fingerprint()
+    if force:
+        _clear_data_caches()
+        status = db.live_link_status()
+    else:
+        status = _cached_link_status(fp)
+    st.session_state["_link_status"] = status
+    st.session_state["_mobile_stamp"] = status.get("stamp") or ""
+    return status
 
 
 def product_labels(active_only: bool = True, item_type: str | None = None) -> dict[str, int]:
@@ -274,16 +279,14 @@ def render_sidebar_nav(pages: list[tuple[str, str]], current: str) -> str:
 
 def page_dashboard() -> None:
     fp = db._dsn_fingerprint()
-    status = st.session_state.get("_link_status") or _cached_link_status(fp)
+    status = ensure_link_status()
     if status.get("ok"):
         st.success(status.get("message") or "PC MES와 연동됨")
     else:
         st.error(status.get("message") or "PC MES와 연동되지 않았습니다.")
-    st.caption("아래 숫자는 PC 생산 MES와 같은 Supabase에서 읽습니다. 안 맞으면 ‘PC 데이터 새로고침’을 누르세요.")
-    c_refresh, _ = st.columns([1, 2])
-    if c_refresh.button("PC 데이터 새로고침", type="primary", key="dash_refresh"):
-        _clear_data_caches()
-        st.session_state["_link_status"] = db.live_link_status()
+    st.caption("PC에서 입력한 품목·생산은 같은 Supabase에 바로 반영됩니다.")
+    if st.button("PC 데이터 새로고침", type="primary", key="dash_refresh"):
+        ensure_link_status(force=True)
         st.rerun()
     try:
         stats = _cached_dashboard_stats(fp)
@@ -303,16 +306,6 @@ def page_dashboard() -> None:
     st.dataframe(_cached_recent_logs(fp, 25), use_container_width=True, hide_index=True)
     st.subheader("현재고")
     st.dataframe(_cached_stock(fp), use_container_width=True, hide_index=True)
-    if st.button("지금 동기화", key="dash_sync"):
-        with st.spinner("동기화 중…"):
-            notify_cloud(wait=True)
-            _clear_data_caches()
-            st.session_state["_link_status"] = db.live_link_status()
-            st.session_state["_mobile_stamp"] = (
-                st.session_state["_link_status"].get("stamp") or ""
-            )
-        st.success("클라우드 대시보드를 갱신했습니다.")
-        st.rerun()
 
 
 def page_products() -> None:
@@ -1020,10 +1013,10 @@ def main() -> None:
     with st.sidebar:
         st.markdown(f"**{user.get('display_name', '')}**")
         st.caption(auth.profile_label(user["role"], user.get("job_title") or ""))
-        st.caption(cloud_badge())
+        status = ensure_link_status()
+        st.caption(status.get("message") or cloud_badge())
         if st.button("PC 데이터 새로고침", use_container_width=True, key="side_refresh"):
-            _clear_data_caches()
-            st.session_state["_link_status"] = db.live_link_status()
+            ensure_link_status(force=True)
             st.rerun()
         current = render_sidebar_nav(pages, current)
         if st.button("로그아웃", use_container_width=True):

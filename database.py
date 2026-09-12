@@ -668,7 +668,15 @@ def get_connection() -> sqlite3.Connection | _PostgresConnection:
     return conn
 
 
+_INIT_DONE = False
+_MOBILE_ACL_DONE = False
+
+
 def init_db() -> None:
+    global _INIT_DONE, _MOBILE_ACL_DONE
+    # Streamlit 프로세스에서는 스키마 초기화를 한 번만 수행 (GRANT/중첩 init이 매우 느림)
+    if _INIT_DONE and uses_cloud_db():
+        return
     with get_connection() as conn:
         conn.executescript(
             """
@@ -784,7 +792,9 @@ def init_db() -> None:
             """
         )
         _migrate(conn)
-        _ensure_mobile_dashboard_access(conn)
+        if not _MOBILE_ACL_DONE:
+            _ensure_mobile_dashboard_access(conn)
+            _MOBILE_ACL_DONE = True
     import hr_database as hr_db
     import auth as app_auth
 
@@ -793,6 +803,7 @@ def init_db() -> None:
     import billing_database as billing_db
 
     billing_db.init_billing_db()
+    _INIT_DONE = True
 
 
 def _ensure_mobile_dashboard_access(conn: sqlite3.Connection | _PostgresConnection) -> None:
@@ -861,7 +872,7 @@ def publish_mobile_dashboard(payload: dict[str, Any]) -> bool:
                 (body, stamp),
             )
             raw.commit()
-            _ensure_mobile_dashboard_realtime(cur, raw)
+            # Realtime GRANT는 init 때 1회만 — publish마다 호출하면 휴대폰 웹이 느려짐
             return True
         conn.execute(
             """
