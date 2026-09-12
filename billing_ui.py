@@ -50,9 +50,9 @@ class BillingPage(ctk.CTkFrame):
         self.claim_tab.refresh()
 
 
-class StatementTab(ctk.CTkFrame):
+class StatementTab(ctk.CTkScrollableFrame):
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.pack(fill="both", expand=True)
         self.app = app
         self._selected_id: int | None = None
@@ -111,14 +111,16 @@ class StatementTab(ctk.CTkFrame):
             buttons, text="초기화", width=90, fg_color="transparent", border_width=1, command=self._clear
         ).pack(side="left", padx=4)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=280)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = ttk.Treeview(
             table_wrap,
             columns=("date", "cust", "code", "name", "qty", "price", "supply", "vat", "total"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=10,
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -413,15 +415,15 @@ CUSTOMER_FORM_FIELDS = (
 )
 
 
-class PartiesTab(ctk.CTkFrame):
+class PartiesTab(ctk.CTkScrollableFrame):
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.pack(fill="both", expand=True)
         self.app = app
         self._selected_customer_id: int | None = None
 
         board = ctk.CTkFrame(self, fg_color="transparent")
-        board.pack(fill="both", expand=True, pady=(8, 0))
+        board.pack(fill="x", pady=(8, 8))
         board.grid_columnconfigure((0, 1), weight=1, uniform="party")
         board.grid_rowconfigure(0, weight=1)
 
@@ -642,9 +644,9 @@ class PartiesTab(ctk.CTkFrame):
             _set(entry, str(row[key] or "") if key in row.keys() else "")
 
 
-class ClaimTab(ctk.CTkFrame):
+class ClaimTab(ctk.CTkScrollableFrame):
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.pack(fill="both", expand=True)
         self.app = app
         self._selected_id: int | None = None
@@ -701,14 +703,16 @@ class ClaimTab(ctk.CTkFrame):
             buttons, text="초기화", width=90, fg_color="transparent", border_width=1, command=self._clear
         ).pack(side="left", padx=4)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=280)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = ttk.Treeview(
             table_wrap,
             columns=("date", "cust", "reason", "hours", "workers", "rate", "material", "amount"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=10,
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)

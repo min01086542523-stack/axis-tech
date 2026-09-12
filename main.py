@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+import threading
+import time
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox, ttk
+import tkinter as tk
 
 import customtkinter as ctk
 
@@ -18,7 +22,6 @@ import charts
 import config as app_config
 import database as db
 from excel_export import (
-    ask_xlsx_path as _ask_xlsx_path,
     export_sheets_to_xlsx as _export_sheets_to_xlsx,
     export_tree_to_xlsx as _export_tree_to_xlsx,
 )
@@ -27,6 +30,7 @@ import hr_ui
 import report_service
 
 APP_TITLE = "제조 MES — 생산 · 경영관리"
+IDLE_TIMEOUT_MS = 30 * 60 * 1000  # 30분 미사용 시 자동 로그아웃
 NAV_ITEMS = (
     ("dashboard", "대시보드"),
     ("products", "품목 관리"),
@@ -47,6 +51,8 @@ ALL_PRODUCTS_OPTION = "전체 품목"
 ITEM_TYPE_OPTIONS = ("완제품", "자재")
 ITEM_TYPE_BY_LABEL = {"완제품": db.ITEM_TYPE_FG, "자재": db.ITEM_TYPE_RM}
 LOGIN_ERROR_LOG = Path(__file__).resolve().parent / "login_error.log"
+_DB_READY = threading.Event()
+_DB_ERROR: BaseException | None = None
 EXTRA_PAGES = (
     ("tools", lambda host, app: hr_ui.ToolLedgerPage(host, app)),
     ("hr", lambda host, app: hr_ui.HrMasterPage(host, app)),
@@ -67,29 +73,338 @@ def _log_startup_error(exc: BaseException) -> str:
     return text
 
 
-class App(ctk.CTk):
-    """로그인과 본화면을 같은 창에서 전환한다.
+def _windows_display_scale() -> float:
+    if not sys.platform.startswith("win"):
+        return 1.0
+    try:
+        import ctypes
 
-    CustomTkinter는 창을 destroy한 뒤 새 CTk를 다시 만들면 Windows에서
-    본화면이 뜨지 않는 경우가 있어, 창은 하나만 유지한다.
-    """
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi = int(ctypes.windll.gdi32.GetDeviceCaps(hdc, 88) or 96)
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        return max(1.0, round(dpi / 96.0, 2))
+    except Exception:
+        return 1.0
+
+
+def _prepare_display() -> None:
+    """창을 만들기 전에 테마·DPI를 고정해 로그인 창이 깜박이지 않게 한다."""
+    if sys.platform.startswith("win"):
+        ctk.deactivate_automatic_dpi_awareness()
+        try:
+            from customtkinter.windows.widgets.scaling.scaling_tracker import ScalingTracker
+
+            ScalingTracker.update_loop_running = True
+        except Exception:
+            pass
+        scale = _windows_display_scale()
+        ctk.set_widget_scaling(scale)
+        ctk.set_window_scaling(scale)
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("blue")
+    brand.logo_image(width=128, height=130)
+    brand.logo_image(width=118, height=120)
+    brand.logo_image(width=58, height=59)
+
+
+def _warmup_database() -> None:
+    global _DB_ERROR
+    try:
+        db.init_db()
+        db.seed_if_empty()
+        hr_db.seed_hr_if_empty()
+        billing_db.seed_billing_if_empty()
+        db.link_production_workers()
+        try:
+            import dashboard_data
+
+            dashboard_data.export_json()
+        except Exception:
+            pass
+    except Exception as exc:
+        _DB_ERROR = exc
+        _log_startup_error(exc)
+    finally:
+        _DB_READY.set()
+
+
+class LoginDialog(ctk.CTkToplevel):
+    """작은 로그인 창. 본화면 창은 숨긴 채 크기를 바꾸지 않는다."""
+
+    def __init__(self, app) -> None:
+        self._ready = False
+        super().__init__(app)
+        self.app = app
+        self._iconbitmap_method_called = True
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        self.title("MES 로그인")
+        tk.Wm.resizable(self, False, False)
+        self.minsize(440, 520)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        scaled_w = int(self._apply_window_scaling(440))
+        scaled_h = int(self._apply_window_scaling(520))
+        x = max(0, (self.winfo_screenwidth() - scaled_w) // 2)
+        y = max(0, (self.winfo_screenheight() - scaled_h) // 2)
+        self.geometry(f"440x520+{x}+{y}")
+
+        card = ctk.CTkFrame(self, corner_radius=12)
+        card.pack(fill="both", expand=True, padx=28, pady=28)
+        brand.pack_logo(card, width=128, height=130, pady=(16, 6))
+        ctk.CTkLabel(
+            card,
+            text="생산관리 · 경영/인사 통합",
+            text_color=("gray40", "gray70"),
+        ).pack(pady=(0, 16))
+        ctk.CTkLabel(card, text="아이디").pack(anchor="w", padx=32)
+        self.entry_user = ctk.CTkEntry(card, width=320)
+        self.entry_user.pack(padx=32, pady=(0, 10))
+        ctk.CTkLabel(card, text="비밀번호").pack(anchor="w", padx=32)
+        self.entry_pw = ctk.CTkEntry(card, width=320, show="*")
+        self.entry_pw.pack(padx=32, pady=(0, 16))
+        self.entry_pw.bind("<Return>", lambda _e: self._on_login())
+        self.entry_user.bind("<Return>", lambda _e: self.entry_pw.focus())
+        self._login_btn = ctk.CTkButton(
+            card,
+            text="준비 중...",
+            width=320,
+            height=40,
+            state="disabled",
+            command=self._on_login,
+        )
+        self._login_btn.pack(pady=(0, 28))
+        if _DB_READY.is_set() and _DB_ERROR is None:
+            self._login_btn.configure(state="normal", text="로그인")
+        self._apply_dark_titlebar()
+        self._ready = True
+        self.deiconify()
+        self.lift()
+        self.after(50, self._poll_db_ready)
+        self.after(80, self.entry_user.focus)
+
+    def _windows_set_titlebar_color(self, color_mode: str) -> None:
+        return
+
+    def deiconify(self):
+        if not getattr(self, "_ready", False):
+            return
+        return tk.Wm.deiconify(self)
+
+    def _apply_dark_titlebar(self) -> None:
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes
+
+            hwnd = ctypes.windll.user32.GetParent(self.winfo_id())
+            value = ctypes.c_int(1)
+            size = ctypes.sizeof(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), size)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), size)
+        except Exception:
+            pass
+
+    def _poll_db_ready(self) -> None:
+        if not self.winfo_exists():
+            return
+        if not _DB_READY.is_set():
+            self.after(50, self._poll_db_ready)
+            return
+        if _DB_ERROR is not None:
+            self._login_btn.configure(state="disabled", text="연결 실패")
+            messagebox.showerror(
+                "실행 오류",
+                f"데이터베이스에 연결하지 못했습니다.\n{_DB_ERROR}\n\n"
+                "login_error.log를 확인하세요.",
+                parent=self,
+            )
+            return
+        self._login_btn.configure(state="normal", text="로그인")
+
+    def _on_close(self) -> None:
+        self.app._on_close()
+
+    def _on_login(self) -> None:
+        if not _DB_READY.is_set():
+            self._login_btn.configure(state="disabled", text="연결 중...")
+            self.after(50, self._on_login)
+            return
+        if _DB_ERROR is not None:
+            messagebox.showerror("실행 오류", str(_DB_ERROR), parent=self)
+            return
+        try:
+            user = auth.authenticate(self.entry_user.get(), self.entry_pw.get())
+        except auth.AuthError as err:
+            messagebox.showwarning("로그인", str(err), parent=self)
+            self._login_btn.configure(state="normal", text="로그인")
+            return
+        self.app._enter_workspace(user)
+
+
+class App(ctk.CTk):
+    """본화면 창은 처음부터 큰 크기로 숨겨 두고, 로그인은 별도 창에서 한다."""
 
     def __init__(self) -> None:
+        self._bootstrapping = True
+        self._keep_withdrawn = True
+        self._paint_frozen = False
         super().__init__()
+        self._iconbitmap_method_called = True
+        self._window_exists = True
+        self._withdraw_called_before_window_exists = True
+        self._native_hide()
         self.user: dict | None = None
         self._user_id_label: ctk.CTkLabel | None = None
         self._user_role_label: ctk.CTkLabel | None = None
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         self._pages: dict[str, ctk.CTkFrame] = {}
         self._current_page = ""
+        self._login_dialog: LoginDialog | None = None
+        self._idle_after_id: str | None = None
+        self._idle_armed = False
+        self._idle_bound = False
+        self._last_idle_reset = 0.0
         self._scheduler = report_service.ReportScheduler(log=self._append_report_log)
+        self._set_resizable(True, True)
+        self.minsize(1080, 680)
+        self._center_on_screen(1280, 780)
+        self.title(APP_TITLE)
         self._shell = ctk.CTkFrame(self, fg_color="transparent")
         self._shell.pack(fill="both", expand=True)
         self._page_host: ctk.CTkFrame | None = None
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._show_login()
+        self._bootstrapping = False
+        self.after(0, self._open_login_dialog)
+
+    def update(self):
+        if getattr(self, "_keep_withdrawn", False) or getattr(self, "_bootstrapping", False):
+            tk.Misc.update_idletasks(self)
+            return
+        return super().update()
+
+    def deiconify(self):
+        if getattr(self, "_keep_withdrawn", False) or getattr(self, "_bootstrapping", False):
+            return
+        return tk.Wm.deiconify(self)
+
+    def _windows_set_titlebar_color(self, color_mode: str) -> None:
+        return
+
+    def _set_resizable(self, width: bool, height: bool) -> None:
+        tk.Tk.resizable(self, width, height)
+        self._last_resizable_args = ([], {"width": width, "height": height})
+
+    def _center_on_screen(self, width: int, height: int) -> None:
+        scaled_w = int(self._apply_window_scaling(width))
+        scaled_h = int(self._apply_window_scaling(height))
+        x = max(0, (self.winfo_screenwidth() - scaled_w) // 2)
+        y = max(0, (self.winfo_screenheight() - scaled_h) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _native_hwnd(self):
+        import ctypes
+
+        return ctypes.windll.user32.GetParent(self.winfo_id())
+
+    def _native_hide(self) -> None:
+        try:
+            self.withdraw()
+        except Exception:
+            pass
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.user32.ShowWindow(self._native_hwnd(), 0)
+        except Exception:
+            pass
+
+    def _freeze_paint(self) -> None:
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.user32.SendMessageW(self._native_hwnd(), 0x000B, 0, 0)
+            self._paint_frozen = True
+        except Exception:
+            self._paint_frozen = False
+
+    def _thaw_paint(self) -> None:
+        if not sys.platform.startswith("win"):
+            return
+        if not getattr(self, "_paint_frozen", False):
+            return
+        self._paint_frozen = False
+        try:
+            import ctypes
+
+            hwnd = self._native_hwnd()
+            ctypes.windll.user32.SendMessageW(hwnd, 0x000B, 1, 0)
+            ctypes.windll.user32.RedrawWindow(hwnd, None, None, 0x0101 | 0x0080 | 0x0400)
+        except Exception:
+            pass
+
+    def _apply_dark_titlebar(self) -> None:
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes
+
+            hwnd = self._native_hwnd()
+            value = ctypes.c_int(1)
+            size = ctypes.sizeof(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), size)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 19, ctypes.byref(value), size)
+        except Exception:
+            pass
+
+    def _reveal_workspace(self) -> None:
+        self._apply_dark_titlebar()
+        self._bootstrapping = False
+        self._keep_withdrawn = False
+        tk.Wm.deiconify(self)
+        self.lift()
+        try:
+            self.focus_force()
+        except Exception:
+            pass
+
+    def _open_login_dialog(self) -> None:
+        if self._login_dialog is not None:
+            try:
+                if self._login_dialog.winfo_exists():
+                    self._login_dialog.destroy()
+            except Exception:
+                pass
+        self._login_dialog = LoginDialog(self)
+
+    def _window_is_hidden(self) -> bool:
+        try:
+            if str(self.state()) == "withdrawn":
+                return True
+        except Exception:
+            pass
+        try:
+            return float(self.attributes("-alpha") or 1) < 0.05
+        except Exception:
+            return False
+
+    def _start_background_services(self) -> None:
+        try:
+            import econtract_server
+
+            econtract_server.start()
+            econtract_server.set_saved_callback(self._on_econtract_saved)
+        except Exception:
+            pass
 
     def _clear_shell(self) -> None:
         for child in self._shell.winfo_children():
@@ -105,77 +420,115 @@ class App(ctk.CTk):
         self._shell.grid_rowconfigure(0, weight=0)
 
     def _show_login(self) -> None:
+        self._disarm_idle_watch()
         self.user = None
         self._scheduler.stop()
+        self._keep_withdrawn = True
+        self._native_hide()
         self._clear_shell()
-        self.title("MES 로그인")
-        self.geometry("440x520")
-        self.minsize(440, 520)
-        self.resizable(False, False)
-
-        card = ctk.CTkFrame(self._shell, corner_radius=12)
-        card.pack(fill="both", expand=True, padx=28, pady=28)
-        brand.pack_logo(card, width=128, height=130, pady=(16, 6))
-        ctk.CTkLabel(
-            card,
-            text="생산관리 · 경영/인사 통합",
-            text_color=("gray40", "gray70"),
-        ).pack(pady=(0, 16))
-
-        ctk.CTkLabel(card, text="아이디").pack(anchor="w", padx=32)
-        self.entry_user = ctk.CTkEntry(card, width=320)
-        self.entry_user.pack(padx=32, pady=(0, 10))
-        ctk.CTkLabel(card, text="비밀번호").pack(anchor="w", padx=32)
-        self.entry_pw = ctk.CTkEntry(card, width=320, show="*")
-        self.entry_pw.pack(padx=32, pady=(0, 16))
-        self.entry_pw.bind("<Return>", lambda _e: self._on_login())
-        self.entry_user.bind("<Return>", lambda _e: self.entry_pw.focus())
-
-        ctk.CTkButton(card, text="로그인", width=320, height=40, command=self._on_login).pack(
-            pady=(0, 28)
-        )
-        self.entry_user.focus()
-
-    def _on_login(self) -> None:
-        try:
-            user = auth.authenticate(self.entry_user.get(), self.entry_pw.get())
-        except auth.AuthError as exc:
-            messagebox.showwarning("로그인", str(exc), parent=self)
-            return
-        try:
-            self._enter_workspace(user)
-        except Exception as exc:
-            _log_startup_error(exc)
-            messagebox.showerror(
-                "실행 오류",
-                f"로그인 후 화면을 열지 못했습니다.\n{type(exc).__name__}: {exc}\n\n"
-                f"자세한 내용은 login_error.log 파일을 확인하세요.",
-                parent=self,
-            )
-            if "dashboard" in self._pages or any(self._pages):
-                return
-            self._show_login()
+        self._open_login_dialog()
 
     def _enter_workspace(self, user: dict) -> None:
         self.user = user
-        self._clear_shell()
-        self.resizable(True, True)
-        self.title(f"{APP_TITLE}  [{auth.role_label(user['role'])}]")
-        self.geometry("1280x780")
-        self.minsize(1080, 680)
-        self._shell.grid_columnconfigure(1, weight=1)
-        self._shell.grid_rowconfigure(0, weight=1)
-        _ensure_tree_style(self)
-        self._build_sidebar()
-        self._build_core_pages()
-        home = auth.first_page_for(user["role"])
-        self.show_page(home)
-        self._build_extra_pages()
-        self.show_page(home)
+        dialog = self._login_dialog
+        self._login_dialog = None
+        if dialog is not None:
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+        self._keep_withdrawn = True
+        self._bootstrapping = True
+        self._native_hide()
+        try:
+            self._clear_shell()
+            self.title(f"{APP_TITLE}  [{auth.role_label(user['role'])}]")
+            self._shell.grid_columnconfigure(1, weight=1)
+            self._shell.grid_rowconfigure(0, weight=1)
+            _ensure_tree_style(self)
+            self._build_sidebar()
+            self._build_page_host()
+            home = auth.first_page_for(user["role"])
+            self.show_page(home, refresh=True)
+            tk.Misc.update_idletasks(self)
+        except Exception:
+            self._bootstrapping = False
+            self._keep_withdrawn = False
+            tk.Wm.deiconify(self)
+            raise
+        self._reveal_workspace()
+        self._arm_idle_watch()
+        self.after(400, self._after_workspace_ready)
+
+    def _arm_idle_watch(self) -> None:
+        """로그인 후 입력·클릭이 없으면 30분 뒤 자동 로그아웃."""
+        self._idle_armed = True
+        if not self._idle_bound:
+            for seq in (
+                "<Any-KeyPress>",
+                "<Any-ButtonPress>",
+                "<MouseWheel>",
+                "<Button-4>",
+                "<Button-5>",
+                "<Motion>",
+            ):
+                try:
+                    self.bind_all(seq, self._on_user_activity, add="+")
+                except Exception:
+                    pass
+            self._idle_bound = True
+        self._reset_idle_timer()
+
+    def _disarm_idle_watch(self) -> None:
+        self._idle_armed = False
+        if self._idle_after_id is not None:
+            try:
+                self.after_cancel(self._idle_after_id)
+            except Exception:
+                pass
+            self._idle_after_id = None
+
+    def _on_user_activity(self, _event=None) -> None:
+        if not self._idle_armed or self.user is None:
+            return
+        now = time.monotonic()
+        if now - self._last_idle_reset < 1.0:
+            return
+        self._last_idle_reset = now
+        self._reset_idle_timer()
+
+    def _reset_idle_timer(self) -> None:
+        if self._idle_after_id is not None:
+            try:
+                self.after_cancel(self._idle_after_id)
+            except Exception:
+                pass
+            self._idle_after_id = None
+        if not self._idle_armed or self.user is None:
+            return
+        self._idle_after_id = self.after(IDLE_TIMEOUT_MS, self._on_idle_timeout)
+
+    def _on_idle_timeout(self) -> None:
+        self._idle_after_id = None
+        if self.user is None:
+            return
+        self._disarm_idle_watch()
+        try:
+            messagebox.showinfo(
+                "자동 로그아웃",
+                "30분 동안 사용이 없어 로그아웃되었습니다.\n다시 로그인해 주세요.",
+                parent=self,
+            )
+        except Exception:
+            pass
+        self._show_login()
+
+    def _after_workspace_ready(self) -> None:
         try:
             self._scheduler.start()
-        except Exception as exc:
-            _log_startup_error(exc)
+        except Exception as err:
+            _log_startup_error(err)
+        threading.Thread(target=self._start_background_services, daemon=True).start()
         self.after(700, lambda: self._check_safety_stock_alerts(show_dialog=True))
 
     def apply_renamed_login(
@@ -317,67 +670,84 @@ class App(ctk.CTk):
         ctk.CTkButton(card, text="변경", command=_save).pack(fill="x")
         current.focus()
 
-    def _build_core_pages(self) -> None:
+    def _build_page_host(self) -> None:
         container = ctk.CTkFrame(self._shell, fg_color="transparent")
         container.grid(row=0, column=1, sticky="nsew", padx=16, pady=16)
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
         self._page_host = container
-        mapping = (
-            ("dashboard", DashboardPage),
-            ("products", ProductsPage),
-            ("bom", BomPage),
-            ("logs", ProductionLogsPage),
-            ("inventory", InventoryPage),
+
+    def _page_factory(self, key: str):
+        core = {
+            "dashboard": DashboardPage,
+            "products": ProductsPage,
+            "bom": BomPage,
+            "logs": ProductionLogsPage,
+            "inventory": InventoryPage,
+        }
+        if key in core:
+            cls = core[key]
+            return lambda host, app, page_cls=cls: page_cls(host, app)
+        for extra_key, factory in EXTRA_PAGES:
+            if extra_key == key:
+                return factory
+        return None
+
+    def _ensure_page(self, key: str) -> bool:
+        if key in self._pages:
+            return True
+        if self.user is None or self._page_host is None:
+            return False
+        factory = self._page_factory(key)
+        if factory is None:
+            return False
+        hold_paint = (
+            not getattr(self, "_paint_frozen", False)
+            and not self._window_is_hidden()
         )
-        for key, cls in mapping:
-            if not auth.can_access(self.user["role"], key):
-                continue
-            page = cls(container, self)
+        if hold_paint:
+            try:
+                self.configure(cursor="watch")
+            except Exception:
+                pass
+            self._freeze_paint()
+        try:
+            page = factory(self._page_host, self)
             page.grid(row=0, column=0, sticky="nsew")
             self._pages[key] = page
-
-    def _build_extra_pages(self) -> None:
-        if self.user is None or self._page_host is None:
-            return
-        host = self._page_host
-        failed: list[str] = []
-        for key, factory in EXTRA_PAGES:
-            if not auth.can_access(self.user["role"], key):
-                continue
-            try:
-                page = factory(host, self)
-                page.grid(row=0, column=0, sticky="nsew")
-                self._pages[key] = page
-            except Exception as exc:
-                _log_startup_error(exc)
-                failed.append(f"{dict(NAV_ITEMS).get(key, key)}: {exc}")
-        if failed:
+            return True
+        except Exception as err:
+            _log_startup_error(err)
             messagebox.showwarning(
-                "일부 화면",
-                "본화면은 열었지만 아래 메뉴는 건너뛰었습니다.\n\n" + "\n".join(failed),
+                "화면",
+                f"{dict(NAV_ITEMS).get(key, key)} 화면을 열지 못했습니다.\n{err}",
                 parent=self,
             )
+            return False
+        finally:
+            if hold_paint:
+                self._thaw_paint()
+                try:
+                    self.configure(cursor="")
+                except Exception:
+                    pass
 
-    def show_page(self, key: str) -> None:
+    def show_page(self, key: str, *, refresh: bool = True) -> None:
         if self.user is None:
             return
         if not auth.can_access(self.user["role"], key):
             return
         if key not in self._pages:
-            messagebox.showwarning(
-                "화면",
-                "이 메뉴 화면을 아직 열 수 없습니다. login_error.log를 확인하세요.",
-                parent=self,
-            )
-            return
+            if not self._ensure_page(key):
+                return
         self._current_page = key
-        self._pages[key].tkraise()
-        try:
-            self._pages[key].refresh()
-        except Exception as exc:
-            _log_startup_error(exc)
-            messagebox.showwarning("화면 갱신", f"{exc}", parent=self)
+        self._pages[key].lift()
+        if refresh:
+            try:
+                self._pages[key].refresh()
+            except Exception as err:
+                _log_startup_error(err)
+                messagebox.showwarning("화면 갱신", f"{err}", parent=self)
         for nav_key, btn in self._nav_buttons.items():
             if nav_key == key:
                 btn.configure(fg_color=("gray70", "gray30"))
@@ -439,17 +809,45 @@ class App(ctk.CTk):
         self.after(0, _apply)
 
     def _on_logout(self) -> None:
+        self._disarm_idle_watch()
         self._scheduler.stop()
         self._show_login()
 
+    def _on_econtract_saved(self, result: dict) -> None:
+        def _apply() -> None:
+            page = self._pages.get("hr_forms")
+            if page is not None:
+                page.refresh()
+            path = (result or {}).get("pdf") or (result or {}).get("file")
+            if path:
+                try:
+                    hr_ui.hr_forms.open_exported(path)
+                except Exception:
+                    pass
+            try:
+                import dashboard_data
+
+                dashboard_data.export_json()
+            except Exception:
+                pass
+
+        self.after(0, _apply)
+
     def _on_close(self) -> None:
+        self._disarm_idle_watch()
         self._scheduler.stop()
+        try:
+            import econtract_server
+
+            econtract_server.stop()
+        except Exception:
+            pass
         self.destroy()
 
 
-class PageBase(ctk.CTkFrame):
+class PageBase(ctk.CTkScrollableFrame):
     def __init__(self, master, app: App, title: str, subtitle: str) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", pady=(0, 12))
@@ -514,8 +912,9 @@ class DashboardPage(PageBase):
             value.pack(padx=16, pady=(0, 16), anchor="w")
             self._hr_labels.append(value)
 
-        self._chart_host = ctk.CTkFrame(self, corner_radius=10)
-        self._chart_host.pack(fill="both", expand=True, pady=(16, 0))
+        self._chart_host = ctk.CTkFrame(self, corner_radius=10, height=380)
+        self._chart_host.pack(fill="x", pady=(16, 8))
+        self._chart_host.pack_propagate(False)
 
     def refresh(self) -> None:
         try:
@@ -673,8 +1072,9 @@ class ProductsPage(PageBase):
             command=self._clear_form,
         ).pack(side="left", padx=4)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=360)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = _make_tree(
             table_wrap,
             columns=(
@@ -1054,11 +1454,9 @@ class ProductionLogsPage(PageBase):
             command=self._on_reset_filter,
         ).grid(row=0, column=7, sticky="w", padx=(0, 12), pady=10)
 
-        tabs = ctk.CTkTabview(self)
-        tabs.pack(fill="both", expand=True)
-        sheet = tabs.add("생산관리")
-        table_wrap = ctk.CTkFrame(sheet, fg_color="transparent")
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=360)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = _make_tree(
             table_wrap,
             columns=(
@@ -1596,8 +1994,9 @@ class BomPage(PageBase):
             form, text="삭제", width=90, fg_color="#a33", hover_color="#822", command=self._on_delete
         ).grid(row=0, column=8, padx=(0, 12), pady=10)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=360)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = _make_tree(
             table_wrap,
             columns=("code", "name", "qty", "unit"),
@@ -1780,8 +2179,9 @@ class InventoryPage(PageBase):
             command=self._on_reset_filter,
         ).grid(row=0, column=7, sticky="w", padx=(0, 12), pady=10)
 
-        board = ctk.CTkFrame(self, fg_color="transparent")
-        board.pack(fill="both", expand=True)
+        board = ctk.CTkFrame(self, fg_color="transparent", height=560)
+        board.pack(fill="x", pady=(0, 8))
+        board.pack_propagate(False)
         board.grid_columnconfigure((0, 1, 2), weight=1, uniform="inv")
         board.grid_rowconfigure(0, weight=1)
 
@@ -2615,7 +3015,7 @@ class SettingsPage(PageBase):
                 command=lambda k=kind: self._open_module_report(k),
             ).pack(side="left", padx=(0, 10))
 
-        form = ctk.CTkScrollableFrame(self, height=280)
+        form = ctk.CTkFrame(self, corner_radius=10)
         form.pack(fill="x")
 
         self.switch_enabled = ctk.CTkSwitch(form, text="자동 발송 사용")
@@ -2652,22 +3052,27 @@ class SettingsPage(PageBase):
         self._add_field(form, 3, 1, "앱 비밀번호", email.get("password", ""), "password", show="*")
         self._add_field(form, 4, 0, "발신 메일", email.get("from_addr", ""), "from_addr")
         self._add_field(form, 4, 1, "수신 메일(쉼표 구분)", email.get("to_addrs", ""), "to_addrs")
-        kakao = cfg.get("kakao") or {}
+        kakao = db.merge_report_kakao(cfg.get("kakao") or {})
         self._add_field(form, 5, 0, "솔라피 API Key", kakao.get("solapi_api_key", ""), "solapi_api_key")
         self._add_field(form, 5, 1, "솔라피 API Secret", kakao.get("solapi_api_secret", ""), "solapi_api_secret", show="*")
         self._add_field(form, 6, 0, "발신번호", kakao.get("from_number", ""), "from_number")
         self._add_field(form, 6, 1, "관리자 휴대폰", kakao.get("to_number", ""), "to_number")
-        self._add_field(form, 7, 0, "알림톡 pfId (선택)", kakao.get("pf_id", ""), "pf_id")
-        self._add_field(form, 7, 1, "알림톡 templateId (선택)", kakao.get("template_id", ""), "template_id")
+        ctk.CTkLabel(
+            form,
+            text="카카오 알림톡 전용 설정",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=7, column=0, columnspan=4, sticky="w", padx=12, pady=(10, 0))
+        self._add_field(form, 8, 0, "카카오톡 채널 ID (pfId)", kakao.get("pf_id", ""), "pf_id")
+        self._add_field(form, 8, 1, "알림톡 템플릿 ID (templateId)", kakao.get("template_id", ""), "template_id")
 
         ctk.CTkLabel(
             form,
             text="카카오톡 개인 메시지는 공식 API로 임의 번호에 보낼 수 없습니다. "
-            "솔라피 알림톡(템플릿 등록 시) 또는 LMS 문자로 관리자 휴대폰에 전달합니다.",
+            "솔라피 알림톡(채널 ID·템플릿 ID 등록 시) 또는 LMS 문자로 관리자 휴대폰에 전달합니다.",
             justify="left",
             wraplength=980,
             text_color=("gray40", "gray70"),
-        ).grid(row=8, column=0, columnspan=4, sticky="w", padx=12, pady=(4, 12))
+        ).grid(row=9, column=0, columnspan=4, sticky="w", padx=12, pady=(4, 12))
 
         actions = ctk.CTkFrame(self, fg_color="transparent")
         actions.pack(fill="x", pady=8)
@@ -2675,7 +3080,7 @@ class SettingsPage(PageBase):
         ctk.CTkButton(actions, text="어제 실적 지금 보내기", width=180, command=self._on_send_now).pack(side="left", padx=4)
 
         self.log_box = ctk.CTkTextbox(self, height=160)
-        self.log_box.pack(fill="both", expand=True, pady=(8, 0))
+        self.log_box.pack(fill="x", pady=(8, 8))
         self.append_log("발송 로그가 여기에 표시됩니다.")
 
     def _add_field(self, parent, row, col, label, value, key, show=None) -> None:
@@ -2736,6 +3141,15 @@ class SettingsPage(PageBase):
         current = app_config.load_config()
         current["report"] = cfg["report"]
         app_config.save_config(current)
+        kakao = cfg["report"].get("kakao") or {}
+        db.save_report_kakao_settings(
+            solapi_api_key=kakao.get("solapi_api_key", ""),
+            solapi_api_secret=kakao.get("solapi_api_secret", ""),
+            from_number=kakao.get("from_number", ""),
+            to_number=kakao.get("to_number", ""),
+            pf_id=kakao.get("pf_id", ""),
+            template_id=kakao.get("template_id", ""),
+        )
         return current
 
     def _on_save(self) -> None:
@@ -2743,6 +3157,10 @@ class SettingsPage(PageBase):
             self._persist_report_config()
         except ValueError as exc:
             messagebox.showwarning("입력 확인", str(exc), parent=self)
+            return
+        except Exception as exc:
+            messagebox.showerror("저장 실패", str(exc), parent=self)
+            self.append_log(f"설정 저장 실패: {exc}")
             return
         self.append_log("설정을 저장했습니다.")
         messagebox.showinfo("완료", "리포트 설정을 저장했습니다.", parent=self)
@@ -2859,6 +3277,7 @@ def _make_tree(
         show="headings",
         style="Mes.Treeview",
         selectmode="browse",
+        height=12,
     )
     vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
     hsb = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
@@ -2912,19 +3331,8 @@ def _clear_tree(tree: ttk.Treeview) -> None:
 
 def main() -> None:
     try:
-        db.init_db()
-        db.seed_if_empty()
-        hr_db.seed_hr_if_empty()
-        billing_db.seed_billing_if_empty()
-        db.link_production_workers()
-        try:
-            import dashboard_data
-
-            dashboard_data.export_json()
-        except Exception:
-            pass
-        ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        _prepare_display()
+        threading.Thread(target=_warmup_database, daemon=True, name="mes-db-warmup").start()
         app = App()
         app.mainloop()
     except Exception as exc:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from tkinter import filedialog, messagebox, ttk
+from tkinter import messagebox, ttk
 
 import customtkinter as ctk
 
@@ -47,9 +47,9 @@ def bind_employee_combo(
     return mapping
 
 
-class HrMasterPage(ctk.CTkFrame):
+class HrMasterPage(ctk.CTkScrollableFrame):
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         self._selected_id: int | None = None
 
@@ -102,14 +102,16 @@ class HrMasterPage(ctk.CTkFrame):
         ).pack(side="left", padx=4)
         ctk.CTkButton(buttons, text="직원명단", width=100, command=self._on_roster).pack(side="left", padx=4)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=320)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = ttk.Treeview(
             table_wrap,
             columns=("no", "name", "rrn", "hire", "resign", "dept", "tax", "status"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=12,
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -280,11 +282,11 @@ class HrMasterPage(ctk.CTkFrame):
             messagebox.showwarning("열기", f"명단은 저장했습니다.\n파일을 열지 못했습니다: {exc}", parent=self)
 
 
-class HrPayrollPage(ctk.CTkFrame):
+class HrPayrollPage(ctk.CTkScrollableFrame):
     """생산실적 작업시간 → 연장근무대장 → 급여대장."""
 
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         header = ctk.CTkFrame(self, fg_color="transparent")
         header.pack(fill="x", pady=(0, 12))
@@ -329,22 +331,21 @@ class HrPayrollPage(ctk.CTkFrame):
         ).grid(row=1, column=3, columnspan=2, padx=4, pady=(0, 10), sticky="w")
 
         split = ctk.CTkFrame(self, fg_color="transparent")
-        split.pack(fill="both", expand=True)
+        split.pack(fill="x")
         split.grid_columnconfigure(0, weight=1)
-        split.grid_rowconfigure(1, weight=1)
-        split.grid_rowconfigure(3, weight=1)
 
         ctk.CTkLabel(split, text="연장근무 집계 (생산관리 연동)", font=ctk.CTkFont(weight="bold")).grid(
             row=0, column=0, sticky="w", pady=(0, 4)
         )
         ot_wrap = ctk.CTkFrame(split)
-        ot_wrap.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        ot_wrap.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         self.tree_ot = ttk.Treeview(
             ot_wrap,
             columns=("no", "name", "dept", "days", "hours", "ot", "wage", "pay"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=8,
         )
         vsb1 = ttk.Scrollbar(ot_wrap, orient="vertical", command=self.tree_ot.yview)
         self.tree_ot.configure(yscrollcommand=vsb1.set)
@@ -429,14 +430,14 @@ class HrPayrollPage(ctk.CTkFrame):
             command=self._on_delete_pay,
         ).pack(side="right")
         pay_wrap = ctk.CTkFrame(split)
-        pay_wrap.grid(row=4, column=0, sticky="nsew")
-        split.grid_rowconfigure(4, weight=1)
+        pay_wrap.grid(row=4, column=0, sticky="ew")
         self.tree_pay = ttk.Treeview(
             pay_wrap,
             columns=("no", "name", "wage", "gross", "deduct", "net"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=8,
         )
         vsb2 = ttk.Scrollbar(pay_wrap, orient="vertical", command=self.tree_pay.yview)
         self.tree_pay.configure(yscrollcommand=vsb2.set)
@@ -861,22 +862,14 @@ class HrPayrollPage(ctk.CTkFrame):
     def _export(self, doc_type: str) -> None:
         ym = self.entry_ym.get().strip()
         export_type = "PAYROLL_LEDGER" if doc_type == "PAYSLIP_ALL" else doc_type
-        label = "급여명세서" if doc_type == "PAYSLIP_ALL" else hr.DOC_TYPES.get(doc_type, doc_type)
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="엑셀 저장",
-            defaultextension=".xlsx",
-            initialfile=f"{label}_{ym}.xlsx",
-            filetypes=[("Excel 통합 문서", "*.xlsx")],
-        )
-        if not path:
-            return
+        path = hr_forms.default_form_path(export_type, ym)
         try:
             saved = hr_forms.export_form(export_type, path, extra={"pay_ym": ym})
+            hr_forms.open_exported(saved)
         except hr.HrError as exc:
             messagebox.showerror("발행 실패", str(exc), parent=self)
-            return
-        messagebox.showinfo("발행", f"저장했습니다.\n{saved}", parent=self)
+        except OSError as exc:
+            messagebox.showwarning("열기", f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}", parent=self)
 
     def _export_contract(self) -> None:
         emp_id = self._resolve_emp_id()
@@ -885,21 +878,14 @@ class HrPayrollPage(ctk.CTkFrame):
             return
         emp = hr.get_employee(emp_id)
         name = emp["name"] if emp is not None else "사원"
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title="근로계약서 저장",
-            defaultextension=".xlsx",
-            initialfile=f"근로계약서_{name}_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            filetypes=[("Excel 통합 문서", "*.xlsx")],
-        )
-        if not path:
-            return
+        path = hr_forms.default_form_path("EMPLOYMENT_CONTRACT", name)
         try:
             saved = hr_forms.export_form("EMPLOYMENT_CONTRACT", path, employee_id=emp_id)
+            hr_forms.open_exported(saved)
         except hr.HrError as exc:
             messagebox.showerror("발행 실패", str(exc), parent=self)
-            return
-        messagebox.showinfo("발행", f"저장했습니다.\n{saved}", parent=self)
+        except OSError as exc:
+            messagebox.showwarning("열기", f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}", parent=self)
 
     def _export_tax(self, kind: str) -> None:
         ym = self.entry_ym.get().strip()
@@ -912,32 +898,25 @@ class HrPayrollPage(ctk.CTkFrame):
 
         is_biz = hr.is_business_tax(kind)
         label = "개인사업소득세" if is_biz else "급여대장_상용직"
-        path = filedialog.asksaveasfilename(
-            parent=self,
-            title=f"{label} 저장",
-            defaultextension=".xlsx",
-            initialfile=f"{label}_{ym}.xlsx",
-            filetypes=[("Excel 통합 문서", "*.xlsx")],
-        )
-        if not path:
-            return
+        path = excel_export.default_export_path(f"{label}_{ym}.xlsx")
         try:
             tax_report.sync_hometax_month(ym)
             if is_biz:
                 saved = tax_report.write_business_income_file(path, ym)
             else:
                 saved = tax_report.write_regular_wage_file(path, ym)
-        except (hr.HrError, OSError) as exc:
+            excel_export.open_exported(saved)
+        except hr.HrError as exc:
             messagebox.showerror("발행 실패", str(exc), parent=self)
-            return
-        messagebox.showinfo("발행", f"저장했습니다.\n{saved}", parent=self)
+        except OSError as exc:
+            messagebox.showwarning("열기", f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}", parent=self)
 
 
-class ToolLedgerPage(ctk.CTkFrame):
+class ToolLedgerPage(ctk.CTkScrollableFrame):
     """생산팀도 쓰는 작업공구 수불."""
 
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         self._emp_map: dict[str, int] = {}
         self._selected_id: int | None = None
@@ -976,14 +955,16 @@ class ToolLedgerPage(ctk.CTkFrame):
             buttons, text="삭제", width=90, fg_color="#a33", hover_color="#822", command=self._on_delete
         ).pack(side="left", padx=4)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=360)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = ttk.Treeview(
             table_wrap,
             columns=("date", "emp", "tool", "spec", "stock", "qout", "qin", "cum", "remark"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=12,
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -1115,9 +1096,9 @@ class ToolLedgerPage(ctk.CTkFrame):
         )
 
 
-class HrFormsPage(ctk.CTkFrame):
+class HrFormsPage(ctk.CTkScrollableFrame):
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         self._emp_map: dict[str, int] = {}
         self._link: hr.EmployeeLink | None = None
@@ -1146,6 +1127,7 @@ class HrFormsPage(ctk.CTkFrame):
         self.entry_dept = _entry(picker, 1, 2, "부서")
         self.entry_title = _entry(picker, 2, 0, "직급")
         self.entry_position = _entry(picker, 2, 1, "직책")
+        self.entry_address = _entry(picker, 2, 2, "주소")
 
         extra = ctk.CTkFrame(self, corner_radius=10)
         extra.pack(fill="x", pady=(0, 12))
@@ -1164,12 +1146,15 @@ class HrFormsPage(ctk.CTkFrame):
 
         docs = ctk.CTkFrame(self, corner_radius=10)
         docs.pack(fill="x", pady=(0, 12))
+        docs_head = ctk.CTkFrame(docs, fg_color="transparent")
+        docs_head.pack(fill="x", padx=12, pady=(10, 6))
         ctk.CTkLabel(
-            docs,
+            docs_head,
             text="인사서식 서류  —  항목을 누르면 해당 양식이 열립니다.",
             font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(anchor="w", padx=12, pady=(10, 6))
+        ).pack(side="left")
         grid = ctk.CTkFrame(docs, fg_color="transparent")
+        self._docs_grid = grid
         grid.pack(fill="x", padx=8, pady=(0, 10))
         self._doc_buttons: dict[str, ctk.CTkButton] = {}
         for i, (code, label) in enumerate(hr.FORM_DOC_TYPES.items()):
@@ -1185,8 +1170,73 @@ class HrFormsPage(ctk.CTkFrame):
         for col in range(5):
             grid.grid_columnconfigure(col, weight=1)
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        self.esign_box = ctk.CTkFrame(docs, corner_radius=8)
+        self.esign_box.pack(fill="x", padx=8, pady=(0, 10))
+        ctk.CTkLabel(
+            self.esign_box,
+            text="엑스테크 전자서명 서식  —  칩을 누르면 휴대폰과 같은 작성 화면이 열립니다.",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+        esign_grid = ctk.CTkFrame(self.esign_box, fg_color="transparent")
+        esign_grid.pack(fill="x", padx=8, pady=(0, 6))
+        self._esign_btns: dict[str, ctk.CTkButton] = {}
+        for i, (code, label) in enumerate(hr.ESIGN_FORM_TYPES.items()):
+            btn = ctk.CTkButton(
+                esign_grid,
+                text=label,
+                width=130,
+                height=36,
+                fg_color="#166534",
+                hover_color="#14532d",
+                command=lambda c=code: self._on_esign_form(c),
+            )
+            btn.grid(row=i // 4, column=i % 4, padx=5, pady=4, sticky="ew")
+            self._esign_btns[code] = btn
+        for col in range(4):
+            esign_grid.grid_columnconfigure(col, weight=1)
+        self.esign_lan_label = ctk.CTkLabel(
+            self.esign_box,
+            text="",
+            text_color=("gray30", "gray70"),
+            font=ctk.CTkFont(size=12),
+        )
+        self.esign_lan_label.pack(anchor="w", padx=12, pady=(0, 8))
+
+        self.contract_box = ctk.CTkFrame(docs, corner_radius=8)
+        ctk.CTkLabel(
+            self.contract_box,
+            text="근로계약서 회사  —  단추를 누르면 해당 회사 계약서가 만들어집니다.",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+        firm_grid = ctk.CTkFrame(self.contract_box, fg_color="transparent")
+        firm_grid.pack(fill="x", padx=8, pady=(0, 6))
+        self._contract_btns: dict[str, ctk.CTkButton] = {}
+        for i, (code, label) in enumerate(hr.CONTRACT_COMPANIES.items()):
+            color = ("#166534", "#14532d") if code in hr.ELECTRONIC_CONTRACT_CODES else ("#3B8ED0", "#1F6AA5")
+            btn = ctk.CTkButton(
+                firm_grid,
+                text=label,
+                width=130,
+                height=32,
+                fg_color=color[0],
+                hover_color=color[1],
+                command=lambda c=code: self._on_contract_company(c),
+            )
+            btn.grid(row=i // 4, column=i % 4, padx=5, pady=4, sticky="ew")
+            self._contract_btns[code] = btn
+        for col in range(4):
+            firm_grid.grid_columnconfigure(col, weight=1)
+        self.lan_label = ctk.CTkLabel(
+            self.contract_box,
+            text="",
+            text_color=("gray30", "gray70"),
+            font=ctk.CTkFont(size=12),
+        )
+        self.lan_label.pack(anchor="w", padx=12, pady=(0, 8))
+
+        table_wrap = ctk.CTkFrame(self, height=320)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         bar = ctk.CTkFrame(table_wrap, fg_color="transparent")
         bar.pack(fill="x", padx=8, pady=(8, 0))
         self._checked: set[str] = set()
@@ -1215,6 +1265,7 @@ class HrFormsPage(ctk.CTkFrame):
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=10,
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
@@ -1223,7 +1274,7 @@ class HrFormsPage(ctk.CTkFrame):
         for col, heading, width in zip(
             self.tree["columns"],
             ("선택", "발행일시", "서식", "성명(스냅샷)", "입사일", "퇴사일", "파일"),
-            (48, 150, 140, 120, 100, 100, 260),
+            (48, 150, 180, 120, 100, 100, 240),
         ):
             if col == "chk":
                 self.tree.heading(col, text=heading, command=self._on_heading_check)
@@ -1233,10 +1284,12 @@ class HrFormsPage(ctk.CTkFrame):
         self.tree.bind("<<TreeviewSelect>>", self._on_doc_select)
         self.tree.bind("<Double-1>", self._on_doc_open)
         self.tree.bind("<Button-1>", self._on_tree_click)
+        self._refresh_esign_lan()
 
     def refresh(self) -> None:
         self.reload_employee_combo()
         self.reload_docs()
+        self._refresh_esign_lan()
 
     def reload_employee_combo(self) -> None:
         previous = self.combo_emp.get()
@@ -1260,7 +1313,7 @@ class HrFormsPage(ctk.CTkFrame):
                 values=(
                     "☑" if marked else "☐",
                     row["issued_at"],
-                    hr.DOC_TYPES.get(row["doc_type"], row["doc_type"]),
+                    self._doc_label(row),
                     row["snap_name"] or row["current_name"] or "",
                     row["snap_hire_date"] or "",
                     row["snap_resign_date"] or "",
@@ -1332,6 +1385,7 @@ class HrFormsPage(ctk.CTkFrame):
                 self.entry_dept,
                 self.entry_title,
                 self.entry_position,
+                self.entry_address,
             ):
                 _set(field, "")
             return
@@ -1341,6 +1395,7 @@ class HrFormsPage(ctk.CTkFrame):
         _set(self.entry_dept, link.department)
         _set(self.entry_title, link.job_title)
         _set(self.entry_position, link.job_position)
+        _set(self.entry_address, link.address or "")
 
     def _on_doc_select(self, _event=None) -> None:
         selection = self.tree.selection()
@@ -1394,10 +1449,156 @@ class HrFormsPage(ctk.CTkFrame):
             "form_dept": self.entry_dept.get().strip(),
             "form_title": self.entry_title.get().strip(),
             "form_position": self.entry_position.get().strip(),
+            "form_address": self.entry_address.get().strip(),
+            "worker_address": self.entry_address.get().strip(),
         }
+
+    def _doc_label(self, row) -> str:
+        label = hr.DOC_TYPES.get(row["doc_type"], row["doc_type"])
+        if row["doc_type"] != "EMPLOYMENT_CONTRACT":
+            return label
+        code = ""
+        try:
+            if "company_code" in row.keys():
+                code = str(row["company_code"] or "")
+        except Exception:
+            code = ""
+        firm = hr.contract_company_label(code)
+        return f"{label} · {firm}" if firm else label
+
+    def _esign_url(self, doc_type: str) -> str:
+        import econtract_server
+
+        base = econtract_server.start().rstrip("/")
+        return f"{base}/axis-form.html?doc={doc_type}"
+
+    def _refresh_esign_lan(self) -> None:
+        try:
+            import econtract_server
+
+            url = econtract_server.start()
+            cert = url.rstrip("/") + "/axis-form.html?doc=CERT_EMPLOYMENT"
+            self.esign_lan_label.configure(text=f"휴대폰 같은 Wi-Fi에서 재직증명서:  {cert}")
+            self.lan_label.configure(text=f"휴대폰에서 같은 Wi-Fi로 여세요  {url}")
+        except Exception as extra_exc:
+            self.esign_lan_label.configure(text=f"전자서명 서버: {extra_exc}")
+
+    def _highlight_esign(self, doc_type: str) -> None:
+        for code, btn in self._esign_btns.items():
+            if code == doc_type:
+                btn.configure(fg_color="#1f6a3a", hover_color="#14532d")
+            else:
+                btn.configure(fg_color="#166534", hover_color="#14532d")
+
+    def _on_esign_form(self, doc_type: str) -> None:
+        import webbrowser
+
+        self._highlight_doc(doc_type)
+        self._highlight_esign(doc_type)
+        try:
+            url = self._esign_url(doc_type)
+        except OSError as extra_exc:
+            messagebox.showerror("전자서명", f"서버를 시작하지 못했습니다.\n{extra_exc}", parent=self)
+            return
+        title = hr.ESIGN_FORM_TYPES.get(doc_type, "전자서명")
+        self.esign_lan_label.configure(text=f"휴대폰에서 같은 Wi-Fi로 여세요  {url}")
+        webbrowser.open(url)
+        messagebox.showinfo(
+            title,
+            "휴대폰에서도 같은 Wi-Fi로 아래 주소를 연 뒤 저장하세요.\n\n"
+            f"{url}\n\n"
+            "저장하면 PDF가 내려받고 MES 총무 서식에도 남습니다.",
+            parent=self,
+        )
+
+    def _show_contract_companies(self) -> None:
+        if not self.contract_box.winfo_ismapped():
+            self.contract_box.pack(fill="x", padx=8, pady=(0, 10), after=self.esign_box)
+        try:
+            import econtract_server
+
+            url = econtract_server.start()
+            self.lan_label.configure(text=f"휴대폰에서 같은 Wi-Fi로 여세요  {url}")
+        except Exception as extra_exc:
+            self.lan_label.configure(text=f"전자근로계약서 서버: {extra_exc}")
+
+    def _hide_contract_companies(self) -> None:
+        self.contract_box.pack_forget()
+
+    def _on_econtract(self, company_code: str = "ECONTRACT") -> None:
+        import webbrowser
+
+        import econtract_server
+
+        try:
+            url = econtract_server.start()
+        except OSError as extra_exc:
+            messagebox.showerror("전자근로계약서", f"서버를 시작하지 못했습니다.\n{extra_exc}", parent=self)
+            return
+        if company_code == "AXIS":
+            url = url.rstrip("/") + "/?brand=axis"
+        title = hr.contract_company_label(company_code) or "전자근로계약서"
+        self.lan_label.configure(text=f"휴대폰에서 같은 Wi-Fi로 여세요  {url}")
+        webbrowser.open(url)
+        messagebox.showinfo(
+            title,
+            "휴대폰에서도 같은 Wi-Fi로 아래 주소를 연 뒤 저장하세요.\n\n"
+            f"{url}\n\n"
+            "Vercel 주소가 아니라 이 주소여야 MES 근로계약서에 자동 저장됩니다.",
+            parent=self,
+        )
+
+    def _on_contract_company(self, company_code: str) -> None:
+        self._show_contract_companies()
+        for code, btn in self._contract_btns.items():
+            if code == company_code:
+                btn.configure(
+                    fg_color=("#1f6a3a", "#14532d") if code in hr.ELECTRONIC_CONTRACT_CODES else ("#3a7ebf", "#1f538d")
+                )
+            else:
+                default = ("#166534", "#14532d") if code in hr.ELECTRONIC_CONTRACT_CODES else ("#3B8ED0", "#1F6AA5")
+                btn.configure(fg_color=default[0], hover_color=default[1])
+        if company_code in hr.ELECTRONIC_CONTRACT_CODES:
+            self._on_econtract(company_code)
+            return
+        emp_id = self._selected_emp_id()
+        if emp_id is None:
+            messagebox.showwarning("선택 필요", "성명을 먼저 선택하세요. 마스터 값이 서식에 들어갑니다.", parent=self)
+            return
+        name = self._link.name if self._link else "전체"
+        label = hr.contract_company_label(company_code) or company_code
+        path = hr_forms.default_form_path("EMPLOYMENT_CONTRACT", name, label)
+        try:
+            extra = self._form_extra()
+            extra["company_code"] = company_code
+            extra["company_label"] = label
+            if company_code != hr.DEFAULT_CONTRACT_COMPANY:
+                extra["skip_logo"] = True
+            saved = hr_forms.export_form("EMPLOYMENT_CONTRACT", path, employee_id=emp_id, extra=extra)
+            hr_forms.open_exported(saved)
+        except ValueError as extra_exc:
+            messagebox.showwarning("입력 확인", str(extra_exc), parent=self)
+            return
+        except hr.HrError as extra_exc:
+            messagebox.showerror("발행 실패", str(extra_exc), parent=self)
+            return
+        except OSError as extra_exc:
+            self.reload_docs()
+            messagebox.showwarning(
+                "열기",
+                f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {extra_exc}",
+                parent=self,
+            )
+            return
+        self.reload_docs()
 
     def _on_form_click(self, doc_type: str) -> None:
         self._highlight_doc(doc_type)
+        if doc_type == "EMPLOYMENT_CONTRACT":
+            self._show_contract_companies()
+            return
+        self._hide_contract_companies()
+        self._highlight_esign(doc_type if doc_type in hr.ESIGN_FORM_TYPES else "")
         emp_id = None if doc_type in hr.COMPANY_WIDE_DOC_TYPES else self._selected_emp_id()
         if doc_type not in hr.COMPANY_WIDE_DOC_TYPES and emp_id is None:
             messagebox.showwarning("선택 필요", "성명을 먼저 선택하세요. 마스터 값이 서식에 들어갑니다.", parent=self)
@@ -1408,15 +1609,19 @@ class HrFormsPage(ctk.CTkFrame):
             extra = self._form_extra()
             saved = hr_forms.export_form(doc_type, path, employee_id=emp_id, extra=extra)
             hr_forms.open_exported(saved)
-        except ValueError as exc:
-            messagebox.showwarning("입력 확인", str(exc), parent=self)
+        except ValueError as extra_exc:
+            messagebox.showwarning("입력 확인", str(extra_exc), parent=self)
             return
-        except hr.HrError as exc:
-            messagebox.showerror("발행 실패", str(exc), parent=self)
+        except hr.HrError as extra_exc:
+            messagebox.showerror("발행 실패", str(extra_exc), parent=self)
             return
-        except OSError as exc:
+        except OSError as extra_exc:
             self.reload_docs()
-            messagebox.showwarning("열기", f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {exc}", parent=self)
+            messagebox.showwarning(
+                "열기",
+                f"서식은 저장했습니다.\n{path}\n\n파일을 열지 못했습니다: {extra_exc}",
+                parent=self,
+            )
             return
         self.reload_docs()
 

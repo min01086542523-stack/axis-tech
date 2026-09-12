@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>전자근로계약서</title>
+  <script>
+    (function () {
+      var doc = new URLSearchParams(location.search).get("doc");
+      if (!doc) return;
+      location.replace("axis-form.html" + location.search);
+    })();
+  </script>
+  <script src="html2pdf.bundle.min.js" onerror="this.onerror=null;this.src='https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'"></script>
+  <script src="export-pdf.js"></script>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; overflow-x: hidden; max-width: 100%; }
+    body {
+      font-family: "Noto Sans KR", "Malgun Gothic", sans-serif;
+      background: #d7d2c8;
+      color: #171717;
+    }
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; padding: 8px 12px;
+      background: rgba(215, 210, 200, .92);
+      border-bottom: 1px solid rgba(0,0,0,.05);
+      backdrop-filter: blur(8px);
+    }
+    .topbar p { margin: 0; }
+    .topbar .t1 { font-size: 11px; font-weight: 700; }
+    .topbar .t2 { font-size: 9px; color: #525252; }
+    .badge {
+      font-size: 9px; color: #fff; background: #262626;
+      border-radius: 999px; padding: 3px 8px; white-space: nowrap;
+    }
+    .badge.ok { background: #166534; }
+    main { padding: 8px 8px 160px; overflow-x: hidden; overflow-y: visible; }
+    .sheet {
+      max-width: min(210mm, 100%); margin: 0 auto; background: #fff;
+      padding: 10px 12px 28px;
+      box-shadow: 0 8px 30px rgba(0,0,0,.12);
+      font-size: 12px; line-height: 1.45;
+      overflow: visible;
+      position: relative;
+    }
+    .sheet > *:not(.sheet-wm) { position: relative; z-index: 1; }
+    .sheet-wm, .axis-logo, .lock-mark {
+      pointer-events: none !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-user-drag: none !important;
+      -webkit-touch-callout: none !important;
+      touch-action: none !important;
+    }
+    .sheet-wm {
+      display: none;
+      position: absolute;
+      left: 50%;
+      top: 62%;
+      transform: translate(-50%, -50%);
+      width: min(64%, 280px);
+      height: auto;
+      z-index: 0;
+      pointer-events: none !important;
+    }
+    .sheet.axis .sheet-wm { display: block; }
+    .axis-logo {
+      display: none;
+      position: absolute;
+      top: 8px;
+      right: 10px;
+      height: 54px;
+      width: auto;
+      z-index: 2;
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none !important;
+    }
+    .sheet.axis .axis-logo { display: block; }
+    .sheet.axis header { padding-right: 62px; }
+    .sheet-end-logo {
+      display: none;
+      align-items: flex-end;
+      margin-top: 8px;
+      min-height: 57px;
+      position: relative;
+      z-index: 2;
+    }
+    .sheet-end-logo.right { justify-content: flex-end; }
+    .sheet.axis .sheet-end-logo { display: flex; }
+    .foot-logo {
+      height: 57px;
+      width: auto;
+      display: block;
+      max-width: 46%;
+      object-fit: contain;
+      pointer-events: none !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-user-drag: none !important;
+    }
+    .sheet header { text-align: center; margin-bottom: 10px; position: relative; z-index: 40; isolation: isolate; }
+    .en { font-size: 9px; letter-spacing: .16em; color: #737373; }
+    h1 { font-size: 22px; margin: 4px 0 2px; }
+    .sub { font-size: 12px; color: #444; }
+    .sub.header-line {
+      display: flex; flex-wrap: wrap; justify-content: center; align-items: center;
+      gap: 4px; margin-bottom: 4px;
+    }
+    .header-addr {
+      font-size: 16px !important; line-height: 1.3; min-height: 44px; min-width: 12em;
+      flex: 1 1 200px; max-width: 100%; text-align: center; border: none;
+      border-bottom: 1px solid #111; padding: 10px 6px; background: #fff; color: #111;
+      pointer-events: auto !important; position: relative; z-index: 41;
+      -webkit-user-select: text !important; user-select: text !important;
+      touch-action: manipulation; -webkit-appearance: none; appearance: none;
+    }
+    .lead { margin: 10px 0 14px; }
+    h2 { font-size: 13px; margin: 14px 0 4px; }
+    p { margin: 0 0 6px; }
+    table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
+    th, td { border: 1px solid #111; padding: 5px 8px; font-size: 12px; }
+    th { background: #f4f4f4; width: 38%; text-align: left; }
+    .sign-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; margin-bottom: 28px; overflow: visible; align-items: start; }
+    .party { overflow: visible; padding-bottom: 8px; min-width: 0; }
+    .party h3 { margin: 0 0 8px; font-size: 13px; }
+    .row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; font-size: 12px; min-width: 0; width: 100%; }
+    .row b { min-width: 52px; flex: 0 0 auto; }
+    .row input, .inline, .money {
+      border: none; border-bottom: 1px solid #111;
+      font: inherit; padding: 2px 4px; background: transparent;
+    }
+    .row input { flex: 1 1 0; min-width: 0; max-width: 100%; }
+    .inline { font-weight: 700; min-width: 0; max-width: 100%; }
+    .inline.wide { min-width: 0; width: min(100%, 28em); }
+    .money { width: 7.2em; text-align: right; }
+    .money[readonly] { font-weight: 700; }
+    .ceo-row { align-items: center; flex-wrap: nowrap; min-height: 88px; }
+    .ceo-row .ceo-name { white-space: nowrap; }
+    .ceo-row .seal { margin-left: 8px; }
+    .date-row { display: flex; justify-content: center; gap: 8px; align-items: center; margin: 18px 0 8px; }
+    .date-row input { width: 64px; text-align: center; border: none; border-bottom: 1px solid #111; font: inherit; }
+    .seal {
+      width: 88px; height: 88px; min-width: 88px; min-height: 88px;
+      border: none; background: transparent;
+      padding: 0; margin: 0 0 0 8px;
+      flex-shrink: 0; display: block;
+      overflow: visible; align-self: center;
+      object-fit: contain;
+      pointer-events: none !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-user-drag: none !important;
+      -webkit-touch-callout: none !important;
+    }
+    .seal svg { width: 88px; height: 88px; display: block; overflow: visible; }
+    .sig-box {
+      border: 1px dashed #888; min-height: 88px; background: #fafafa;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; color: #666;
+    }
+    .sig-box canvas { width: 100%; height: 88px; display: block; }
+    .foot {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+      background: #1f1f1f;
+    }
+    .foot button {
+      flex: 1; height: 44px; border: 0; border-radius: 8px;
+      font-size: 14px; font-weight: 700; cursor: pointer;
+    }
+    .ghost { background: #3f3f3f; color: #fff; }
+    .primary { background: #e8e4dc; color: #111; }
+    .save { background: #166534; color: #fff; }
+    .modal {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+      z-index: 40; align-items: center; justify-content: center; padding: 16px;
+    }
+    .modal.on { display: flex; }
+    .pad {
+      width: min(640px, 100%); background: #fff; border-radius: 12px; padding: 12px;
+    }
+    .pad canvas { width: 100%; height: 220px; border: 1px solid #ccc; background: #fff; touch-action: none; }
+    .pad .acts { display: flex; gap: 8px; margin-top: 8px; }
+    .msg { display: none; margin: 8px auto 0; max-width: 210mm; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+    .msg.ok { display: block; background: #dcfce7; color: #14532d; }
+    .msg.err { display: block; background: #fee2e2; color: #7f1d1d; }
+    #rrn { caret-color: transparent; min-width: 0; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+    .id-card {
+      width: min(380px, calc(100vw - 24px)); max-width: 100%;
+      background: linear-gradient(180deg, #f4c9d1 0%, #eeb8c4 55%, #e8aab8 100%);
+      border-radius: 14px; padding: 14px 14px 12px; color: #1a1a1a;
+      box-shadow: 0 12px 32px rgba(0,0,0,.28); border: 1px solid #d9a3af;
+      overflow: hidden;
+    }
+    .id-card h4 { margin: 0 0 10px; text-align: center; font-size: 15px; letter-spacing: .12em; }
+    .id-body { display: grid; grid-template-columns: 78px 1fr; gap: 10px; align-items: start; }
+    .id-photo {
+      width: 78px; height: 96px; background: #f7e6ea; border: 1px solid #c98b98;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; color: #8a5964; text-align: center;
+    }
+    .id-fields label { display: block; font-size: 10px; color: #6b3d47; margin: 0 0 2px; }
+    .id-fields { min-width: 0; }
+    .id-fields input {
+      width: 100%; max-width: 100%; box-sizing: border-box;
+      border: none; border-bottom: 1px solid #8a5964; background: transparent;
+      font: inherit; font-weight: 700; padding: 4px 2px; margin-bottom: 8px;
+    }
+    #idRrn { font-size: 15px; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+    .id-acts { display: flex; gap: 8px; margin-top: 10px; }
+    .id-acts button { flex: 1; height: 40px; border: 0; border-radius: 8px; font-weight: 700; cursor: pointer; }
+    .foot button { min-width: 0; }
+    @media (max-width: 700px) {
+      .topbar { padding: 8px 10px; gap: 6px; }
+      .topbar .t2 { word-break: break-all; }
+      main { padding: 6px 6px 160px; }
+      .sheet { padding: 10px 8px 24px; }
+      .sign-grid { gap: 10px; }
+      .row b { min-width: 44px; }
+      #rrn { font-size: 11px; }
+      .ceo-row { min-height: 96px; }
+      .seal, .seal svg { width: 76px; height: 76px; min-width: 76px; min-height: 76px; }
+      .date-row input { width: 52px; }
+      .id-body { grid-template-columns: 64px 1fr; gap: 8px; }
+      .id-photo { width: 64px; height: 80px; }
+    }
+    @media (max-width: 480px) {
+      .sign-grid { grid-template-columns: 1fr; gap: 18px; }
+      #rrn { font-size: 13px; }
+      .foot { gap: 6px; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
+      .foot button { font-size: 13px; height: 42px; }
+      .foot-logo { height: 48px; }
+    }
+    @media (max-width: 360px) {
+      .id-body { grid-template-columns: 1fr; }
+      .id-photo { display: none; }
+      #idRrn { font-size: 16px; }
+    }
+    @media print {
+      .topbar, .foot, .modal, .msg { display: none !important; }
+      body { background: #fff; }
+      main { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <p class="t1">전자근로계약서</p>
+      <p class="t2" id="topWage">일당 102,000원 · 매주 수요일 지급</p>
+      <p class="t2" id="lanHint">휴대폰 저장: __LAN_URL__</p>
+    </div>
+    <span class="badge" id="status">서명 필요</span>
+  </div>
+  <div id="flash" class="msg"></div>
+  <main>
+    <article class="sheet" id="sheet">
+      <img class="axis-logo" id="axisLogo" src="data:image/png;base64,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" alt="AXIS TECH" />
+      <img class="sheet-wm" id="axisWm" src="data:image/png;base64,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" alt="" />
+      <header>
+        <p class="en">ELECTRONIC EMPLOYMENT CONTRACT</p>
+        <h1>전자근로계약서</h1>
+        <p class="sub header-line">
+          <span id="headerFirm">주식회사 나은미래</span> ·
+          <input type="text" id="headerAddress" class="header-addr" value="경기도 안성시 비룡로 26, 상가 222호" autocomplete="street-address" inputmode="text" enterkeyhint="done" />
+          · TEL 070-8211-3360
+        </p>
+        <p class="sub">일당제 · 주급 지급</p>
+      </header>
+      <p class="lead">
+        사용자 <input class="inline" id="company" value="주식회사 나은미래" /> (대표이사 <span id="ceoLead">민현기</span>, 이하 "사용자")와 근로자
+        <input class="inline" id="workerTop" placeholder="성명 입력" /> (이하 "근로자")는 다음과 같이 근로계약을 체결한다.
+      </p>
+      <h2>제1조 (근로형태)</h2>
+      <p>본 계약은 일당제 근로계약으로 한다. 근로자는 근로한 날에 대하여 아래 제5조의 일당을 지급받는다.</p>
+      <h2>제2조 (근무장소)</h2>
+      <p>근로자의 근무장소는 <input class="inline wide" id="workplace" value="수원시 권선구 고색동 972번지, 3층" /> 로 한다.</p>
+      <h2>제3조 (업무내용)</h2>
+      <p>근로자의 업무는 <input class="inline wide" id="job" value="소형전자제품 단순 조립 및 임가공" /> 으로 한다.</p>
+      <h2>제4조 (근로시간)</h2>
+      <p>
+        근로시간은 <input class="inline" id="workHours" value="09:00 ~ 18:00" /> 로 하며,
+        휴게시간은 <input class="inline" id="breakHours" value="12:00 ~ 13:00" /> 로 한다.
+      </p>
+      <h2>제5조 (임금)</h2>
+      <p>1일 임금은 아래와 같이 <input class="money" id="dailyWage" inputmode="numeric" value="102000" /> 원으로 한다.</p>
+      <table>
+        <tr><th>항목</th><th>금액</th></tr>
+        <tr><td>기본급</td><td><input class="money" id="basePay" inputmode="numeric" value="82560" /> 원</td></tr>
+        <tr><td>주휴수당</td><td><input class="money" id="weeklyPay" inputmode="numeric" value="16512" /> 원</td></tr>
+        <tr><td>장려수당</td><td><input class="money" id="incentivePay" inputmode="numeric" value="2928" /> 원</td></tr>
+        <tr><td>일당 합계</td><td><b id="dailyTotal">102,000</b>원</td></tr>
+      </table>
+      <h2>제6조 (임금지급일)</h2>
+      <p>임금은 매주 수요일 (주급)에 근로자에게 지급한다.</p>
+      <h2>제7조 (3일 미만 퇴사 시 임금)</h2>
+      <p id="earlyQuit">근로자가 근무 개시일부터 3일 미만으로 퇴사하는 경우, 제5조의 일당(102,000원)을 지급하지 아니하고, 최저임금(시급 10,320원) × 실근로시간만 계산하여 지급한다. 휴게시간은 제외하며, 1일 8시간 근무 시 82,560원을 지급한다.</p>
+      <h2>제8조 (기타)</h2>
+      <p>본 계약서에 명시되지 않은 사항은 근로기준법 등 관련 법령과 일반적인 상관례에 따른다.</p>
+      <p>본 계약의 성립을 증명하기 위하여 당사자가 기명날인 또는 서명한다.</p>
+      <div class="date-row">
+        <input id="y" type="number" /> 년
+        <input id="m" type="number" /> 월
+        <input id="d" type="number" /> 일
+      </div>
+      <div class="sign-grid">
+        <div class="party">
+          <h3>사용자</h3>
+          <div class="row"><b>상호</b><input id="companySign" value="주식회사 나은미래" /></div>
+          <div class="row"><b>주소</b><input id="address" value="경기도 안성시 비룡로 26, 상가 222호" /></div>
+          <div class="row ceo-row">
+            <b>대표이사</b><span class="ceo-name" id="ceoName">민현기</span>
+            <img class="seal lock-mark" id="corpSeal" src="seal-naeun.png?v=20260908b" alt="" draggable="false" />
+          </div>
+        </div>
+        <div class="party">
+          <h3>근로자</h3>
+          <div class="row"><b>주민번호</b><input id="rrn" placeholder="눌러 입력" maxlength="14" readonly /></div>
+          <div class="row"><b>성명</b><input id="name" placeholder="눌러 입력" /></div>
+          <div class="row"><b>주소</b><input id="workerAddress" placeholder="주소" autocomplete="street-address" /></div>
+          <div class="row"><b>서명</b></div>
+          <div class="sig-box" id="sigPreview" onclick="openPad()">터치하여 서명</div>
+        </div>
+      </div>
+      <div class="sheet-end-logo right" id="sheetEndLogo">
+        <img class="foot-logo lock-mark" src="axis-logo-strong.png?v=20260908e" alt="" draggable="false" />
+      </div>
+    </article>
+  </main>
+  <div class="foot">
+    <button class="ghost" type="button" onclick="resetForm()">새로 작성</button>
+    <button class="primary" type="button" onclick="openPad()">터치하여 서명하기</button>
+    <button class="save" type="button" onclick="event.preventDefault(); saveContract();">저장</button>
+  </div>
+  <div class="modal" id="idModal" onclick="if(event.target===this) closeIdCard()">
+    <div class="id-card" onclick="event.stopPropagation()">
+      <h4>주민등록증</h4>
+      <div class="id-body">
+        <div class="id-photo">사진</div>
+        <div class="id-fields">
+          <label>성명</label>
+          <input id="idName" placeholder="성명" />
+          <label>주민등록번호</label>
+          <input id="idRrn" inputmode="numeric" placeholder="000000-0000000" maxlength="14" />
+        </div>
+      </div>
+      <div class="id-acts">
+        <button class="ghost" type="button" onclick="closeIdCard()">닫기</button>
+        <button class="save" type="button" onclick="acceptIdCard()">확인</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="modal" onclick="if(event.target===this) closePad()">
+    <div class="pad" onclick="event.stopPropagation()">
+      <p style="margin:0 0 8px;font-weight:700;">근로자 서명</p>
+      <canvas id="pad" width="900" height="320"></canvas>
+      <div class="acts">
+        <button class="ghost" type="button" onclick="closePad()">닫기</button>
+        <button class="ghost" type="button" onclick="clearPad()">지우기</button>
+        <button class="save" type="button" onclick="acceptPad()">서명 완료</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const BRAND = new URLSearchParams(location.search).get("brand") === "axis" ? "axis" : "naeun";
+    const DEFAULTS = BRAND === "axis" ? {
+      company: "엑스테크 Axis Tech",
+      workplace: "㈜엑스테크 내",
+      job: "생산 및 관련 업무",
+      workHours: "09:00 ~ 17:30",
+      breakHours: "12:00 ~ 12:30",
+      address: "충남 천안시 서북구 입장면 연곡로",
+      ceo: "민현기",
+      companyCode: "AXIS",
+    } : {
+      company: "주식회사 나은미래",
+      workplace: "수원시 권선구 고색동 972번지, 3층",
+      job: "소형전자제품 단순 조립 및 임가공",
+      workHours: "09:00 ~ 18:00",
+      breakHours: "12:00 ~ 13:00",
+      address: "경기도 안성시 비룡로 26, 상가 222호",
+      ceo: "민현기",
+      companyCode: "ECONTRACT",
+    };
+    DEFAULTS.basePay = 82560;
+    DEFAULTS.weeklyPay = 16512;
+    DEFAULTS.incentivePay = 2928;
+    document.querySelector(".t1").textContent = BRAND === "axis" ? "Axis Tech 전자계약서" : "전자근로계약서";
+    document.querySelector("h1").textContent = BRAND === "axis" ? "Axis Tech 전자계약서" : "전자근로계약서";
+    document.title = document.querySelector(".t1").textContent;
+    function zhuanCell(ox, oy, paths) {
+      return '<g transform="translate(' + ox + ' ' + oy + ') scale(0.44)" fill="none" stroke="#c41a1a" stroke-linecap="round" stroke-linejoin="round">' + paths + '</g>';
+    }
+    function renderCorpSeal(host, companyName) {
+      const chars = Array.from(String(companyName || "").replace(/\s/g, ""));
+      const step = 360 / Math.max(chars.length, 1);
+      const start = step / 2;
+      const texts = chars.map(function (ch, i) {
+        const deg = start + step * i;
+        return '<g transform="rotate(' + deg + ' 100 100)"><text x="100" y="23.2" text-anchor="middle" dominant-baseline="central" fill="#c41a1a" font-size="18.5" font-weight="800" font-family="Malgun Gothic, Apple SD Gothic Neo, Noto Sans KR, sans-serif">' + ch + '</text></g>';
+      }).join("");
+      const dai = zhuanCell(102, 54, '<g stroke-width="16.5"><path d="M22 10 Q8 50 24 92"/><path d="M22 42 Q42 28 36 10"/><path d="M54 10 V90"/><path d="M54 12 Q80 10 90 26"/><path d="M40 44 H80"/><path d="M54 90 Q76 84 90 70"/></g>');
+      const pyo = zhuanCell(102, 102, '<g stroke-width="16"><path d="M50 6 V34"/><path d="M24 16 V34"/><path d="M76 16 V34"/><path d="M16 34 H84"/><path d="M50 34 V58"/><path d="M50 54 Q18 66 10 94"/><path d="M50 54 Q82 66 90 94"/><path d="M28 64 H44"/><path d="M56 64 H72"/></g>');
+      const ri = zhuanCell(54, 54, '<g stroke-width="14.5"><path d="M8 14 H40"/><path d="M8 42 H40"/><path d="M8 72 H40"/><path d="M24 14 V72"/><circle cx="34" cy="58" r="5.2" fill="#c41a1a" stroke="none"/><rect x="48" y="10" width="44" height="38" rx="3" stroke-width="13.5"/><path d="M70 10 V48"/><path d="M48 29 H92"/><path d="M70 48 V90"/><path d="M48 66 H92"/><path d="M52 90 H88"/></g>');
+      const sa = zhuanCell(54, 102, '<g stroke-width="15.5"><path d="M50 8 V92" stroke-width="17"/><path d="M18 16 H82"/><rect x="28" y="26" width="44" height="26" rx="3" stroke-width="13.5"/><path d="M28 39 H72"/><path d="M14 64 H86"/><path d="M32 64 Q16 80 12 94"/><path d="M68 64 Q84 80 88 94"/></g>');
+      host.innerHTML = '<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><circle cx="100" cy="100" r="93.5" fill="none" stroke="#c41a1a" stroke-width="9"/><circle cx="100" cy="100" r="61" fill="none" stroke="#c41a1a" stroke-width="5.2"/><polygon fill="#c41a1a" points="100,16.4 102.7,23.2 109.8,23.2 104.1,27.4 106.3,34.2 100,30 93.7,34.2 95.9,27.4 90.2,23.2 97.3,23.2"/>' + texts + ri + dai + sa + pyo + '</svg>';
+    }
+    function applyBrand() {
+      company.value = DEFAULTS.company;
+      companySign.value = DEFAULTS.company;
+      workplace.value = DEFAULTS.workplace;
+      job.value = DEFAULTS.job;
+      workHours.value = DEFAULTS.workHours;
+      breakHours.value = DEFAULTS.breakHours;
+      address.value = DEFAULTS.address;
+      const headerAddr = document.getElementById("headerAddress");
+      if (headerAddr) headerAddr.value = DEFAULTS.address;
+      const headerFirm = document.getElementById("headerFirm");
+      if (headerFirm) headerFirm.textContent = DEFAULTS.company;
+      ceoName.textContent = DEFAULTS.ceo;
+      ceoLead.textContent = DEFAULTS.ceo;
+      corpSeal.src = BRAND === "axis" ? "seal-axis.png?v=20260908b" : "seal-naeun.png?v=20260908b";
+      corpSeal.draggable = false;
+      corpSeal.setAttribute("draggable", "false");
+      const paper = document.getElementById("sheet");
+      if (paper) paper.classList.toggle("axis", BRAND === "axis");
+      ["axisLogo", "axisWm"].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.draggable = false;
+        el.setAttribute("draggable", "false");
+      });
+    }
+    applyBrand();
+    (function syncHeaderAddress() {
+      const top = document.getElementById("headerAddress");
+      const bot = document.getElementById("address");
+      if (!top || !bot) return;
+      top.addEventListener("input", function () { bot.value = top.value; });
+      bot.addEventListener("input", function () { top.value = bot.value; });
+    })();
+    const now = new Date();
+    y.value = now.getFullYear();
+    m.value = now.getMonth() + 1;
+    d.value = now.getDate();
+    const VIEW_ID = new URLSearchParams(location.search).get("id");
+    if (lanHint.textContent.indexOf("__LAN_URL__") >= 0 || lanHint.textContent.indexOf("127.0.0.1") >= 0) {
+      fetch("/api/info").then(r => r.json()).then(info => {
+        if (info && info.url) {
+          const base = String(info.url).replace(/\/?$/, "/");
+          lanHint.textContent = "휴대폰 저장: " + (BRAND === "axis" ? base + "?brand=axis" : base);
+        }
+      }).catch(() => {
+        if (lanHint.textContent.indexOf("__LAN_URL__") >= 0) {
+          lanHint.textContent = "휴대폰 저장: " + location.origin + "/";
+        }
+      });
+    }
+    let signature = "";
+    let syncingWage = false;
+    let syncingName = false;
+    let syncingCompany = false;
+    const canvas = document.getElementById("pad");
+    const ctx = canvas.getContext("2d");
+    let drawing = false;
+    function pos(e) {
+      const r = canvas.getBoundingClientRect();
+      const t = e.touches ? e.touches[0] : e;
+      return { x: (t.clientX - r.left) * canvas.width / r.width, y: (t.clientY - r.top) * canvas.height / r.height };
+    }
+    function start(e) { e.preventDefault(); drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+    function move(e) {
+      if (!drawing) return;
+      e.preventDefault();
+      const p = pos(e);
+      ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.strokeStyle = "#111";
+      ctx.lineTo(p.x, p.y); ctx.stroke();
+    }
+    function end() { drawing = false; }
+    canvas.addEventListener("mousedown", start);
+    canvas.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    canvas.addEventListener("touchstart", start, { passive: false });
+    canvas.addEventListener("touchmove", move, { passive: false });
+    canvas.addEventListener("touchend", end);
+    function formatRrn(value) {
+      const digits = String(value || "").replace(/\D/g, "").slice(0, 13);
+      if (digits.length <= 6) return digits;
+      return digits.slice(0, 6) + "-" + digits.slice(6);
+    }
+    function openIdCard() {
+      idName.value = (workerTop.value || name.value || "").trim();
+      idRrn.value = formatRrn(rrn.value);
+      idModal.classList.add("on");
+      setTimeout(() => idRrn.focus(), 50);
+    }
+    function closeIdCard() { idModal.classList.remove("on"); }
+    function acceptIdCard() {
+      const who = idName.value.trim();
+      const rid = formatRrn(idRrn.value);
+      if (who) setWorkerName(who, "top");
+      rrn.value = rid;
+      closeIdCard();
+    }
+    idRrn.addEventListener("input", () => { idRrn.value = formatRrn(idRrn.value); });
+    rrn.addEventListener("focus", openIdCard);
+    rrn.addEventListener("click", openIdCard);
+    function openPad() { modal.classList.add("on"); }
+    function closePad() { modal.classList.remove("on"); }
+    function clearPad() { ctx.clearRect(0, 0, canvas.width, canvas.height); }
+    function setSignature(dataUrl) {
+      signature = String(dataUrl || "");
+      if (!signature) {
+        sigPreview.textContent = "터치하여 서명";
+        status.textContent = "서명 필요";
+        status.classList.remove("ok");
+        return;
+      }
+      sigPreview.innerHTML = "";
+      const img = new Image();
+      img.src = signature;
+      img.style.maxWidth = "100%";
+      img.style.height = "88px";
+      sigPreview.appendChild(img);
+      status.textContent = "서명 완료";
+      status.classList.add("ok");
+    }
+    function acceptPad() {
+      setSignature(canvas.toDataURL("image/png"));
+      modal.classList.remove("on");
+    }
+    function fillFromSaved(data) {
+      if (!data) return;
+      const code = String(data.company_code || "");
+      if (code === "AXIS" && BRAND !== "axis") {
+        location.replace("?brand=axis&id=" + encodeURIComponent(VIEW_ID || data.id || ""));
+        return;
+      }
+      if (code === "ECONTRACT" && BRAND === "axis" && VIEW_ID) {
+        location.replace("?id=" + encodeURIComponent(VIEW_ID));
+        return;
+      }
+      if (data.company) setCompany(data.company, "lead");
+      if (data.workplace) workplace.value = data.workplace;
+      if (data.job) job.value = data.job;
+      if (data.work_hours) workHours.value = data.work_hours;
+      if (data.break_hours) breakHours.value = data.break_hours;
+      if (data.address) {
+        address.value = data.address;
+        const headerAddr = document.getElementById("headerAddress");
+        if (headerAddr) headerAddr.value = data.address;
+      }
+      if (data.worker_address || data.form_address) {
+        const wa = document.getElementById("workerAddress");
+        if (wa) wa.value = data.worker_address || data.form_address;
+      }
+      if (data.name) setWorkerName(data.name, "top");
+      if (data.rrn) rrn.value = formatRrn(data.rrn);
+      if (data.year) y.value = data.year;
+      if (data.month) m.value = data.month;
+      if (data.day) d.value = data.day;
+      if (data.base_pay != null) basePay.value = String(money(data.base_pay));
+      if (data.weekly_pay != null) weeklyPay.value = String(money(data.weekly_pay));
+      if (data.incentive_pay != null) incentivePay.value = String(money(data.incentive_pay));
+      if (data.daily_wage != null) dailyWage.value = String(money(data.daily_wage));
+      if (data.signature) setSignature(data.signature);
+      renderTotal();
+    }
+    async function loadSavedContract() {
+      if (!VIEW_ID) return;
+      try {
+        const res = await fetch("/api/contract?id=" + encodeURIComponent(VIEW_ID), { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "문서를 찾지 못했습니다.");
+        fillFromSaved(data);
+      } catch (err) {
+        show("err", "저장된 근로계약서를 열지 못했습니다. MES PC와 같은 Wi-Fi에서 다시 열어주세요.");
+      }
+    }
+    function money(value) {
+      const n = Number(String(value || "").replace(/[^0-9.-]/g, ""));
+      return Number.isFinite(n) ? Math.round(n) : 0;
+    }
+    function fmt(n) { return money(n).toLocaleString("ko-KR"); }
+    function setWorkerName(value, source) {
+      if (syncingName) return;
+      syncingName = true;
+      const text = (value || "").trim();
+      if (source !== "top") workerTop.value = text;
+      if (source !== "bottom") name.value = text;
+      syncingName = false;
+    }
+    function setCompany(value, source) {
+      if (syncingCompany) return;
+      syncingCompany = true;
+      const text = value || "";
+      if (source !== "lead") company.value = text;
+      if (source !== "sign") companySign.value = text;
+      const headerFirm = document.getElementById("headerFirm");
+      if (headerFirm) headerFirm.textContent = text || DEFAULTS.company;
+      syncingCompany = false;
+    }
+    function sumParts() {
+      return money(basePay.value) + money(weeklyPay.value) + money(incentivePay.value);
+    }
+    function renderTotal() {
+      const total = sumParts();
+      const stated = money(dailyWage.value) || total;
+      dailyTotal.textContent = fmt(total);
+      topWage.textContent = "일당 " + fmt(stated) + "원 · 매주 수요일 지급";
+      earlyQuit.textContent =
+        "근로자가 근무 개시일부터 3일 미만으로 퇴사하는 경우, 제5조의 일당(" + fmt(stated) +
+        "원)을 지급하지 아니하고, 최저임금(시급 10,320원) × 실근로시간만 계산하여 지급한다. 휴게시간은 제외하며, 1일 8시간 근무 시 " +
+        fmt(basePay.value) + "원을 지급한다.";
+    }
+    function onPartsChange() {
+      if (syncingWage) return;
+      syncingWage = true;
+      dailyWage.value = String(sumParts());
+      renderTotal();
+      syncingWage = false;
+    }
+    function onDailyWageChange() {
+      if (syncingWage) return;
+      renderTotal();
+    }
+    workerTop.addEventListener("input", () => setWorkerName(workerTop.value, "top"));
+    name.addEventListener("input", () => setWorkerName(name.value, "bottom"));
+    company.addEventListener("input", () => setCompany(company.value, "lead"));
+    companySign.addEventListener("input", () => setCompany(companySign.value, "sign"));
+    ["basePay", "weeklyPay", "incentivePay"].forEach(id => {
+      document.getElementById(id).addEventListener("input", onPartsChange);
+    });
+    dailyWage.addEventListener("input", onDailyWageChange);
+    function resetForm() {
+      applyBrand();
+      basePay.value = String(DEFAULTS.basePay);
+      weeklyPay.value = String(DEFAULTS.weeklyPay);
+      incentivePay.value = String(DEFAULTS.incentivePay);
+      dailyWage.value = String(DEFAULTS.basePay + DEFAULTS.weeklyPay + DEFAULTS.incentivePay);
+      setWorkerName("", "top");
+      rrn.value = "";
+      const wa = document.getElementById("workerAddress");
+      if (wa) wa.value = "";
+      signature = "";
+      sigPreview.textContent = "터치하여 서명";
+      status.textContent = "서명 필요"; status.classList.remove("ok");
+      clearPad(); flash.className = "msg";
+      onPartsChange();
+    }
+    function show(kind, text) {
+      flash.className = "msg " + kind;
+      flash.textContent = text;
+    }
+    function mesApi(path) {
+      const lan = new URLSearchParams(location.search).get("lan");
+      if (lan) {
+        try {
+          return String(lan).replace(/\/?$/, "") + path;
+        } catch (err) { /* origin 사용 */ }
+      }
+      return location.origin + path;
+    }
+    async function saveContract() {
+      const workerName = (workerTop.value || name.value).trim();
+      const workerRrn = rrn.value.trim();
+      if (!workerName) { show("err", "근로자 성명을 입력하세요."); return; }
+      if (!workerRrn) { show("err", "주민등록번호를 입력하세요."); return; }
+      if (!signature) { show("err", "서명을 먼저 완료하세요."); return; }
+      const total = sumParts();
+      const docTitle = DEFAULTS.companyCode === "AXIS" ? "Axis Tech 전자계약서" : "전자근로계약서";
+      const filename = exportFileName(docTitle, workerName);
+      const saveBtn = document.querySelector(".foot button.save");
+      if (saveBtn) saveBtn.disabled = true;
+      show("ok", "PDF를 만드는 중...");
+      try {
+        const captured = await captureSheetPdf(document.getElementById("sheet"), filename);
+        const res = await fetch(mesApi("/api/save-contract"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({
+            name: workerName,
+            rrn: workerRrn,
+            year: Number(y.value),
+            month: Number(m.value),
+            day: Number(d.value),
+            signature,
+            company_code: DEFAULTS.companyCode,
+            company: company.value.trim(),
+            address: (document.getElementById("headerAddress") || address).value.trim() || address.value.trim(),
+            worker_address: (document.getElementById("workerAddress") || {}).value ? document.getElementById("workerAddress").value.trim() : "",
+            workplace: workplace.value.trim(),
+            job: job.value.trim(),
+            work_hours: workHours.value.trim(),
+            break_hours: breakHours.value.trim(),
+            base_pay: money(basePay.value),
+            weekly_pay: money(weeklyPay.value),
+            incentive_pay: money(incentivePay.value),
+            daily_wage: money(dailyWage.value) || total
+          }, exportPayloadFields(captured))),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "저장에 실패했습니다.");
+        try { await downloadCaptured(captured); } catch (dlErr) { /* 아래 링크로 받음 */ }
+        showDownloadLink(flash, captured, docTitle + "를 PC MES 총무/서식에 저장했습니다.");
+      } catch (err) {
+        const hint = document.getElementById("lanHint");
+        const url = (hint && hint.textContent.replace("휴대폰 저장: ", "")) || location.origin;
+        show("err", (err && err.message ? err.message : "저장에 실패했습니다.") + " MES PC와 같은 Wi-Fi에서 " + url + " 로 열어 저장하세요.");
+      } finally {
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    }
+    onPartsChange();
+    loadSavedContract();
+  </script>
+</body>
+</html>

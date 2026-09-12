@@ -71,8 +71,11 @@ def flash_ok(message: str) -> None:
 def cloud_badge() -> str:
     try:
         if db.uses_cloud_db():
-            stamp = db.mes_dashboard_updated_at()
-            extra = f" · 스냅샷 {stamp}" if stamp else ""
+            stamp = st.session_state.get("_mobile_stamp") or db.mes_dashboard_updated_at()
+            synced = st.session_state.get("_mobile_sync")
+            extra = f" · 휴대폰 동기화 {stamp}" if stamp else ""
+            if synced is False:
+                extra += " · 동기화 실패"
             return f"Supabase 연결됨{extra}"
         return "로컬 SQLite (Secrets에 DATABASE_URL이 없습니다)"
     except Exception as exc:
@@ -110,7 +113,15 @@ def boot() -> bool:
         db.apply_runtime_secrets()
         probe = db.ping_cloud()
         st.session_state["_db_probe"] = probe
-        _boot_cached("cloud")
+        cloud = "cloud" if db.uses_cloud_db() else "local"
+        _boot_cached(cloud)
+        try:
+            ok = db.publish_mobile_dashboard(dashboard_data.build_dashboard())
+            st.session_state["_mobile_sync"] = bool(ok)
+            st.session_state["_mobile_stamp"] = db.mes_dashboard_updated_at()
+        except Exception as sync_exc:
+            st.session_state["_mobile_sync"] = False
+            st.session_state["_mobile_sync_error"] = db.safe_error_text(sync_exc)
         return True
     except Exception as exc:
         st.session_state["_db_error"] = db.safe_error_text(exc)
@@ -140,6 +151,9 @@ def inject_css() -> None:
         .stApp { background: #0b1c33; }
         .block-container { padding-top: 1.1rem; max-width: 1400px; }
         h1, h2, h3, p, label, span { color: #e8eef7; }
+        @media (max-width: 720px) {
+          .block-container { padding: 0.6rem 0.7rem 1.2rem; }
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -607,6 +621,11 @@ def main() -> None:
         st.markdown(f"**{user.get('display_name', '')}**")
         st.caption(auth.profile_label(user["role"], user.get("job_title") or ""))
         st.caption(cloud_badge())
+        st.caption("PC 생산 MES · 휴대폰 대시보드와 같은 Supabase입니다.")
+        st.markdown(
+            "[휴대폰 MES](https://mes-mhk-6.vercel.app/) · "
+            "[웹 MES](https://axis-tech-n8xg6ren3aaks7dyv2q8f2.streamlit.app/)"
+        )
         choice = st.radio("메뉴", labels, index=keys.index(current))
         st.session_state.page = keys[labels.index(choice)]
         if st.button("로그아웃"):

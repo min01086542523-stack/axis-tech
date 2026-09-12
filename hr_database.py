@@ -36,6 +36,30 @@ EMPLOYEE_LINKED_DOC_TYPES = tuple(
 
 COMPANY_WIDE_DOC_TYPES = frozenset({"EMPLOYEE_ROSTER", "PAYROLL_LEDGER", "OVERTIME_LEDGER"})
 
+CONTRACT_COMPANIES: dict[str, str] = {
+    "ECONTRACT": "전자근로계약서",
+    "AXIS": "Axis Tech 전자계약서",
+    "DOEUN": "도은메딕스",
+    "BELLIE": "벨리푸드",
+    "MWTECH": "엠더블유테크",
+    "SNTECH": "에스엔텍",
+    "SYSTA": "시스타",
+    "BHKOREA": "BH코리아",
+}
+ELECTRONIC_CONTRACT_CODES = frozenset({"ECONTRACT", "AXIS"})
+DEFAULT_CONTRACT_COMPANY = "DOEUN"
+ESIGN_FORM_TYPES: dict[str, str] = {
+    "CERT_EMPLOYMENT": "재직증명서",
+    "RESIGNATION": "사직서",
+    "VACATION_PLAN": "휴가계획서",
+    "EXPENSE_REQUEST": "지출품의서",
+}
+
+
+def contract_company_label(code: str | None) -> str:
+    return CONTRACT_COMPANIES.get(str(code or "").strip(), "")
+
+
 FORM_DOC_TYPES: dict[str, str] = {
     "CERT_EMPLOYMENT": "재직증명서",
     "CERT_CAREER": "경력증명서",
@@ -253,6 +277,7 @@ def init_hr_db() -> None:
                 payload_json       TEXT    NOT NULL DEFAULT '{}',
                 issued_at          TEXT    NOT NULL,
                 file_path          TEXT,
+                company_code       TEXT    NOT NULL DEFAULT '',
                 FOREIGN KEY (employee_id) REFERENCES hr_employees(id) ON DELETE RESTRICT
             );
 
@@ -364,6 +389,28 @@ def _migrate_hr(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE hr_employees ADD COLUMN tax_type TEXT NOT NULL DEFAULT '상용직'"
         )
+    doc_cols = {row[1] for row in conn.execute("PRAGMA table_info(hr_documents)")}
+    if "company_code" not in doc_cols:
+        conn.execute(
+            "ALTER TABLE hr_documents ADD COLUMN company_code TEXT NOT NULL DEFAULT ''"
+        )
+    conn.execute(
+        """
+        UPDATE hr_documents
+        SET company_code = 'ECONTRACT'
+        WHERE doc_type = 'EMPLOYMENT_CONTRACT'
+          AND (company_code IS NULL OR company_code = '')
+          AND payload_json LIKE '%"econtract"%true%'
+        """
+    )
+    conn.execute(
+        """
+        UPDATE hr_documents
+        SET company_code = 'DOEUN'
+        WHERE doc_type = 'EMPLOYMENT_CONTRACT'
+          AND (company_code IS NULL OR company_code = '')
+        """
+    )
     conn.execute(
         """
         UPDATE hr_employees
@@ -448,6 +495,42 @@ def get_employee(employee_id: int) -> sqlite3.Row | None:
         return conn.execute(
             "SELECT * FROM hr_employees WHERE id = ?", (employee_id,)
         ).fetchone()
+
+
+def find_employee_by_rrn(rrn: str) -> sqlite3.Row | None:
+    digits = hr_crypto.normalize_rrn(rrn)
+    digest = hr_crypto.rrn_hash(digits)
+    with mes_db.get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM hr_employees WHERE rrn_hash = ?", (digest,)
+        ).fetchone()
+
+
+def find_employees_by_name(name: str) -> list[sqlite3.Row]:
+    text = (name or "").strip()
+    if not text:
+        return []
+    with mes_db.get_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM hr_employees WHERE name = ? ORDER BY id DESC",
+            (text,),
+        ).fetchall()
+
+
+def next_emp_no(prefix: str = "EC") -> str:
+    token = f"{prefix}-"
+    highest = 0
+    with mes_db.get_connection() as conn:
+        rows = conn.execute("SELECT emp_no FROM hr_employees").fetchall()
+    for row in rows:
+        no = str(row["emp_no"] or "")
+        if not no.startswith(token):
+            continue
+        try:
+            highest = max(highest, int(no.split("-")[-1]))
+        except ValueError:
+            continue
+    return f"{prefix}-{highest + 1:03d}"
 
 
 def get_employee_link(employee_id: int) -> EmployeeLink:
@@ -615,13 +698,23 @@ def update_employee(employee_id: int, **kwargs: Any) -> None:
 
 
 def delete_employee(employee_id: int) -> None:
-    try:
-        with mes_db.get_connection() as conn:
-            cur = conn.execute("DELETE FROM hr_employees WHERE id = ?", (employee_id,))
-            if cur.rowcount == 0:
-                raise HrError("삭제할 사원을 찾을 수 없습니다.")
-    except sqlite3.IntegrityError as exc:
-        raise HrError("서식·급여·연차 이력이 있어 삭제할 수 없습니다. 퇴사 처리하세요.") from exc
+    emp_id = int(employee_id)
+    with mes_db.get_connection() as conn:
+        if conn.execute("SELECT id FROM hr_employees WHERE id = ?", (emp_id,)).fetchone() is None:
+            raise HrError("삭제할 사원을 찾을 수 없습니다.")
+        conn.execute("DELETE FROM hr_documents WHERE employee_id = ?", (emp_id,))
+        conn.execute("DELETE FROM hr_payroll WHERE employee_id = ?", (emp_id,))
+        conn.execute("DELETE FROM hr_leave_records WHERE employee_id = ?", (emp_id,))
+        conn.execute("DELETE FROM hr_expense_requests WHERE employee_id = ?", (emp_id,))
+        conn.execute("DELETE FROM hr_tool_ledger WHERE employee_id = ?", (emp_id,))
+        conn.execute("DELETE FROM hr_consents WHERE employee_id = ?", (emp_id,))
+        conn.execute(
+            "UPDATE production_logs SET employee_id = NULL WHERE employee_id = ?",
+            (emp_id,),
+        )
+        cur = conn.execute("DELETE FROM hr_employees WHERE id = ?", (emp_id,))
+        if cur.rowcount == 0:
+            raise HrError("삭제할 사원을 찾을 수 없습니다.")
 
 
 def snapshot_dict(link: EmployeeLink) -> dict[str, Any]:
@@ -644,6 +737,7 @@ def issue_document(
     payload: dict[str, Any],
     file_path: str | None = None,
     title: str | None = None,
+    company_code: str = "",
 ) -> int:
     if doc_type not in DOC_TYPES:
         raise HrError("알 수 없는 서식입니다.")
@@ -664,6 +758,9 @@ def issue_document(
         snap = snapshot_dict(get_employee_link(employee_id))
         snap.pop("employee_id", None)
     label = DOC_TYPES[doc_type]
+    firm = contract_company_label(company_code or payload.get("company_code"))
+    if doc_type == "EMPLOYMENT_CONTRACT" and firm:
+        label = f"{label}_{firm}"
     emp_name = snap.get("snap_name") or "전체"
     now = _now()
     with mes_db.get_connection() as conn:
@@ -673,8 +770,8 @@ def issue_document(
                 employee_id, doc_type, title,
                 snap_name, snap_emp_no, snap_rrn_enc, snap_rrn_masked,
                 snap_hire_date, snap_resign_date, snap_department, snap_job_title,
-                payload_json, issued_at, file_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                payload_json, issued_at, file_path, company_code
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 employee_id,
@@ -691,9 +788,30 @@ def issue_document(
                 json.dumps(payload, ensure_ascii=False),
                 now,
                 file_path,
+                str(company_code or payload.get("company_code") or ""),
             ),
         )
         return int(cur.lastrowid)
+
+
+def update_latest_document_file(employee_id: int, doc_type: str, file_path: str) -> None:
+    """가장 최근 발행 기록의 파일 경로를 PDF/이미지로 바꾼다."""
+    with mes_db.get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id FROM hr_documents
+            WHERE employee_id = ? AND doc_type = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (int(employee_id), str(doc_type)),
+        ).fetchone()
+        if row is None:
+            return
+        conn.execute(
+            "UPDATE hr_documents SET file_path = ? WHERE id = ?",
+            (str(file_path), int(row["id"])),
+        )
 
 
 def fetch_documents(limit: int = 200) -> list[sqlite3.Row]:
@@ -710,11 +828,40 @@ def fetch_documents(limit: int = 200) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def delete_document(doc_id: int) -> None:
+def get_document(doc_id: int) -> sqlite3.Row | None:
     with mes_db.get_connection() as conn:
-        cur = conn.execute("DELETE FROM hr_documents WHERE id = ?", (doc_id,))
-        if cur.rowcount == 0:
-            raise HrError("삭제할 서식 기록을 찾을 수 없습니다.")
+        return conn.execute(
+            """
+            SELECT d.*, e.emp_no, e.name AS current_name
+            FROM hr_documents AS d
+            LEFT JOIN hr_employees AS e ON e.id = d.employee_id
+            WHERE d.id = ?
+            """,
+            (int(doc_id),),
+        ).fetchone()
+
+
+def delete_document(doc_id: int) -> None:
+    if delete_documents([doc_id]) == 0:
+        raise HrError("삭제할 서식 기록을 찾을 수 없습니다.")
+
+
+def delete_documents(doc_ids: list[int]) -> int:
+    ids = [int(doc_id) for doc_id in doc_ids if int(doc_id) > 0]
+    if not ids:
+        return 0
+    deleted = 0
+    with mes_db.get_connection() as conn:
+        for doc_id in ids:
+            cur = conn.execute("DELETE FROM hr_documents WHERE id = ?", (doc_id,))
+            deleted += int(cur.rowcount or 0)
+    return deleted
+
+
+def delete_all_documents() -> int:
+    with mes_db.get_connection() as conn:
+        cur = conn.execute("DELETE FROM hr_documents")
+        return int(cur.rowcount or 0)
 
 
 def upsert_payroll(
@@ -1005,6 +1152,47 @@ def insert_tool_move(
             ),
         )
         return int(cur.lastrowid)
+
+
+def update_tool_move(
+    move_id: int,
+    employee_id: int,
+    work_date: str,
+    tool_name: str,
+    spec: str = "",
+    qty_in: float = 0,
+    qty_out: float = 0,
+    remark: str = "",
+) -> None:
+    if get_employee(employee_id) is None:
+        raise HrError("사원을 찾을 수 없습니다.")
+    if not tool_name.strip():
+        raise HrError("공구명을 입력하세요.")
+    if qty_in < 0 or qty_out < 0:
+        raise HrError("수량은 0 이상이어야 합니다.")
+    if qty_in == 0 and qty_out == 0:
+        raise HrError("입고 또는 출고 수량을 입력하세요.")
+    with mes_db.get_connection() as conn:
+        cur = conn.execute(
+            """
+            UPDATE hr_tool_ledger
+            SET employee_id = ?, work_date = ?, tool_name = ?, spec = ?,
+                qty_in = ?, qty_out = ?, remark = ?
+            WHERE id = ?
+            """,
+            (
+                employee_id,
+                _require_date(work_date, "일자"),
+                tool_name.strip(),
+                spec.strip(),
+                qty_in,
+                qty_out,
+                remark.strip(),
+                int(move_id),
+            ),
+        )
+        if cur.rowcount == 0:
+            raise HrError("수정할 공구 수불 내역을 찾을 수 없습니다.")
 
 
 def fetch_tool_ledger(

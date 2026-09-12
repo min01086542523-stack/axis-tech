@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -237,7 +238,9 @@ def open_exported(path: str | Path) -> None:
     target = Path(path)
     if not target.exists():
         raise FileNotFoundError(str(target))
-    os.startfile(os.path.normpath(str(target)))
+    import excel_export
+
+    excel_export.open_exported(target)
 
 
 def _logo_image(*, icon_only: bool = True):
@@ -274,7 +277,7 @@ def _place_logo_xy(
     ratio = height_px / float(img.height or 1)
     width_px = max(1, int((img.width or height_px) * ratio))
     img.width = width_px
-    img.height = int(height_px)
+    img.height = max(1, int(round(height_px)))
     img.anchor = brand._anchor_at(ws, x, y, width_px, height_px, last_col)
     ws.add_image(img)
 
@@ -312,7 +315,7 @@ def _place_name_logo(
     _place_logo_xy(ws, x, y, height_px=size, last_col=last_col, icon_only=True)
 
 
-def _place_title_logo(ws: Worksheet, title_row: int, last_col: int, *, height_px: float = 38) -> None:
+def _place_title_logo(ws: Worksheet, title_row: int, last_col: int, *, height_px: float = 40) -> None:
     sheet_w = sum(brand._col_px(ws, col, last_col) for col in range(1, last_col + 1))
     img = _logo_image(icon_only=True)
     if img is None:
@@ -324,6 +327,27 @@ def _place_title_logo(ws: Worksheet, title_row: int, last_col: int, *, height_px
     y = sum(brand._row_h_px(ws, r) for r in range(1, title_row))
     y += max(0.0, (title_h - height_px) / 2)
     _place_logo_xy(ws, x, y, height_px=height_px, last_col=last_col, icon_only=True)
+
+
+def _embed_axis_seal(ws: Worksheet, party_top: int, stamp_col: int, last_col: int, *, size_px: int = 70) -> None:
+    """공급자 대표자 (인) 칸에 엑스테크 법인인감을 올린다."""
+    import econtract_seal
+    from openpyxl.drawing.image import Image as XLImage
+
+    data = econtract_seal.render_png(econtract_seal.SEAL_AXIS)
+    img = XLImage(BytesIO(data))
+    img.width = size_px
+    img.height = size_px
+    stamp_r1 = party_top + 2
+    stamp_r2 = party_top + 4
+    col_w = brand._col_px(ws, stamp_col, last_col)
+    stamp_h = sum(brand._row_h_px(ws, r) for r in range(stamp_r1, stamp_r2 + 1))
+    x = sum(brand._col_px(ws, c, last_col) for c in range(1, stamp_col))
+    x += max(0.0, (col_w - size_px) / 2)
+    y = sum(brand._row_h_px(ws, r) for r in range(1, stamp_r1))
+    y += max(0.0, (stamp_h - size_px) / 2)
+    img.anchor = brand._anchor_at(ws, x, y, size_px, size_px, last_col)
+    ws.add_image(img)
 
 
 def _place_watermark(ws: Worksheet, r1: int, r2: int, last_col: int, *, opacity: float = 0.15) -> None:
@@ -393,14 +417,17 @@ def _write_party_box(
             "\n".join(
                 p
                 for p in (
-                    " / ".join(
-                        x for x in (party.get("biz_type", ""), party.get("biz_item", "")) if x
+                    (
+                        "제조업 외, 기타도급 외"
+                        if stamp
+                        else " / ".join(
+                            x for x in (party.get("biz_type", ""), party.get("biz_item", "")) if x
+                        )
                     ),
                     "  ".join(
                         x
                         for x in (
                             f"TEL {party['phone']}" if party.get("phone") else "",
-                            f"FAX {party['fax']}" if party.get("fax") else "",
                         )
                         if x
                     ),
@@ -438,7 +465,7 @@ def _write_copy(
     seller: dict[str, str],
     buyer: dict[str, str],
     rows: list,
-) -> int:
+) -> tuple[int, int]:
     issued = _parse_date(statement_date)
     date_text = f"{issued.year}년 {issued.month:02d}월 {issued.day:02d}일"
     supply_sum = vat_sum = total_sum = 0.0
@@ -565,7 +592,7 @@ def _write_copy(
     _outline(ws, start_row, 1, r, LAST_COL)
     _outline(ws, party_top, 1, party_top + 4, LAST_COL)
     _outline(ws, header_row, 1, r - 3, LAST_COL)
-    return r
+    return r, party_top
 
 
 def export_statement(path: str | Path, rows: list, customer: str, statement_date: str) -> Path:
@@ -585,7 +612,7 @@ def export_statement(path: str | Path, rows: list, customer: str, statement_date
     buyer = billing.party_for_customer(customer, customer_id)
     doc_no = billing.statement_doc_no(rows)
 
-    last1 = _write_copy(
+    last1, party_top1 = _write_copy(
         ws, 1,
         copy_label="공급받는자 보관용",
         doc_no=doc_no,
@@ -601,7 +628,7 @@ def export_statement(path: str | Path, rows: list, customer: str, statement_date
         font=SMALL_FONT,
     )
     ws.row_dimensions[cut].height = 14
-    last2 = _write_copy(
+    last2, party_top2 = _write_copy(
         ws, cut + 1,
         copy_label="공급자 보관용",
         doc_no=doc_no,
@@ -615,9 +642,18 @@ def export_statement(path: str | Path, rows: list, customer: str, statement_date
     _place_watermark(ws, cut + 1, last2, LAST_COL)
     _place_title_logo(ws, 2, LAST_COL)
     _place_title_logo(ws, cut + 2, LAST_COL)
+    _embed_axis_seal(ws, party_top1, LAST_COL, LAST_COL)
+    _embed_axis_seal(ws, party_top2, LAST_COL, LAST_COL)
     ws.print_area = f"A1:I{last2}"
     ws.page_setup.fitToHeight = 1
+    try:
+        import excel_export
+
+        excel_export.normalize_workbook(wb)
+    except Exception:
+        pass
     wb.save(path)
+    brand.lock_excel_pictures_no_select(path)
     return path
 
 
@@ -853,9 +889,16 @@ def export_loss_claim(path: str | Path, row) -> Path:
         font_size=14,
         last_col=c,
         offset_cm=2.0,
-        height_px=34,
+        height_px=39,
         align="center",
     )
     ws.print_area = "A1:H33"
+    try:
+        import excel_export
+
+        excel_export.normalize_workbook(wb)
+    except Exception:
+        pass
     wb.save(path)
+    brand.lock_excel_pictures_no_select(path)
     return path

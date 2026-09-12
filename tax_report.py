@@ -13,6 +13,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.worksheet import Worksheet
 
+import brand
 import hr_crypto
 import hr_database as hr
 from payroll_slip import COMPANY_NAME, LTC_RATE
@@ -245,7 +246,9 @@ def write_regular_wage_file(path: str | Path, pay_ym: str) -> Path:
     ws.freeze_panes = "A3"
     _print_setup(ws, last_col, last_row)
     path.parent.mkdir(parents=True, exist_ok=True)
+    brand.stamp_workbook_watermarks(wb)
     wb.save(path)
+    brand.lock_excel_pictures_no_select(path)
     return path
 
 
@@ -320,7 +323,9 @@ def write_business_income_file(path: str | Path, pay_ym: str) -> Path:
     ws.freeze_panes = "A3"
     _print_setup(ws, last_col, last_row)
     path.parent.mkdir(parents=True, exist_ok=True)
+    brand.stamp_workbook_watermarks(wb)
     wb.save(path)
+    brand.lock_excel_pictures_no_select(path)
     return path
 
 

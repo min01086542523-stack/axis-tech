@@ -13,9 +13,9 @@ ROLE_COMBO = [label for _key, label in auth.ROLE_CHOICES]
 ROLE_BY_LABEL = {label: key for key, label in auth.ROLE_CHOICES}
 
 
-class AccountsPage(ctk.CTkFrame):
+class AccountsPage(ctk.CTkScrollableFrame):
     def __init__(self, master, app) -> None:
-        super().__init__(master, fg_color="transparent")
+        super().__init__(master, fg_color="transparent", corner_radius=0)
         self.app = app
         self._selected_id: str | None = None
 
@@ -58,14 +58,16 @@ class AccountsPage(ctk.CTkFrame):
         )
         hint.grid(row=3, column=0, columnspan=6, sticky="w", padx=12, pady=(0, 10))
 
-        table_wrap = ctk.CTkFrame(self)
-        table_wrap.pack(fill="both", expand=True)
+        table_wrap = ctk.CTkFrame(self, height=320)
+        table_wrap.pack(fill="x", pady=(0, 8))
+        table_wrap.pack_propagate(False)
         self.tree = ttk.Treeview(
             table_wrap,
             columns=("id", "name", "dept", "title", "role"),
             show="headings",
             style="Mes.Treeview",
             selectmode="browse",
+            height=12,
         )
         vsb = ttk.Scrollbar(table_wrap, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)

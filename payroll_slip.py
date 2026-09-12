@@ -13,6 +13,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.worksheet import Worksheet
 
+import brand
+
 LEDGER_SHEET = "급여대장"
 
 TITLE_FILL = PatternFill("solid", fgColor="9DC3E6")
@@ -283,7 +285,9 @@ def build_payroll_workbook(
         name = str(person.get("name") or f"사원{i + 1}")
         ws = wb.create_sheet(_sheet_name(name, i + 1))
         _write_payslip(ws, pay_ym, first_data_row + i, name)
+    brand.stamp_workbook_watermarks(wb)
     wb.save(path)
+    brand.lock_excel_pictures_no_select(path)
     return path
 
 

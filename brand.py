@@ -12,6 +12,66 @@ LOGO_WATERMARK = ASSETS_DIR / "axis_logo_watermark.png"
 
 _ctk_cache: dict[tuple[int, int, int], Any] = {}
 
+def lock_excel_pictures_no_select(xlsx_path: str | Path) -> None:
+    """
+    엑셀에 삽입된 이미지(로고/워터마크)가 클릭·선택되지 않게 OOXML에 noSelect를 넣는다.
+    """
+    import os
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    xlsx_path = Path(xlsx_path)
+    if not xlsx_path.exists():
+        return
+
+    xdr_ns = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+    def _lock_drawing_xml(xml_bytes: bytes) -> bytes:
+        try:
+            root = ET.fromstring(xml_bytes)
+        except Exception:
+            return xml_bytes
+
+        # 모든 pic에 noSelect / noMove / noResize 등을 강제한다.
+        for pic in root.findall(f".//{{{xdr_ns}}}pic"):
+            nv_pic_pr = pic.find(f"{{{xdr_ns}}}nvPicPr")
+            if nv_pic_pr is None:
+                continue
+            c_nv_pic_pr = nv_pic_pr.find(f"{{{xdr_ns}}}cNvPicPr")
+            if c_nv_pic_pr is None:
+                continue
+            pic_locks = c_nv_pic_pr.find(f"{{{a_ns}}}picLocks")
+            if pic_locks is None:
+                pic_locks = ET.Element(f"{{{a_ns}}}picLocks")
+                c_nv_pic_pr.append(pic_locks)
+            pic_locks.set("noChangeAspect", "1")
+            pic_locks.set("noMove", "1")
+            pic_locks.set("noResize", "1")
+            pic_locks.set("noSelect", "1")
+
+        try:
+            # xml_declaration을 포함하면 일부 엑셀에서 더 안정적이다.
+            return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+        except Exception:
+            return xml_bytes
+
+    tmp = xlsx_path.with_suffix(xlsx_path.suffix + ".locktmp")
+    try:
+        with zipfile.ZipFile(xlsx_path, "r") as zin, zipfile.ZipFile(tmp, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename.startswith("xl/drawings/") and info.filename.endswith(".xml"):
+                    data = _lock_drawing_xml(data)
+                zout.writestr(info, data)
+        os.replace(tmp, xlsx_path)
+    except Exception:
+        try:
+            if tmp.exists():
+                os.remove(tmp)
+        except Exception:
+            pass
+
 
 def logo_image(*, width: int, height: int, dark: bool = False):
     try:
@@ -135,7 +195,7 @@ def _anchor_at(ws, x_px: float, y_px: float, width_px: float, height_px: float, 
     )
 
 
-def write_excel_watermark(ws, last_col: int = 4) -> None:
+def write_excel_watermark(ws, last_col: int = 4, *, opacity: float = 0.15) -> None:
     """줄 간격 조정 후, 시트 정중앙에 흐린 로고를 넣는다."""
     from openpyxl.drawing.image import Image as XLImage
 
@@ -143,7 +203,7 @@ def write_excel_watermark(ws, last_col: int = 4) -> None:
         return
     if not LOGO_LIGHT.exists() and not LOGO_DARK.exists():
         return
-    path = ensure_watermark_file()
+    path = ensure_watermark_file(opacity=opacity)
     img = XLImage(str(path))
     target = 200
     ratio = target / float(img.width or 1)
@@ -200,7 +260,25 @@ def stamp_workbook_logos(workbook) -> None:
         last_col = int(ws.max_column or 4)
         if not getattr(ws, "_axis_footer_logo", False):
             write_excel_logo(ws, _end_mark_row(ws), last_col)
-        write_excel_watermark(ws, last_col)
+        write_excel_watermark(ws, last_col, opacity=0.15)
         last_col = int(ws.max_column or 4)
         last_row = int(ws.max_row or 1)
         ws.print_area = f"A1:{get_column_letter(last_col)}{last_row}"
+    try:
+        import excel_export
+
+        excel_export.normalize_workbook(workbook)
+    except Exception:
+        pass
+
+
+def stamp_workbook_watermarks(workbook, *, opacity: float = 0.15) -> None:
+    for ws in workbook.worksheets:
+        last_col = int(ws.max_column or 4)
+        write_excel_watermark(ws, last_col, opacity=opacity)
+    try:
+        import excel_export
+
+        excel_export.normalize_workbook(workbook)
+    except Exception:
+        pass

@@ -292,7 +292,7 @@ def _dispatch_channels(subject: str, body: str) -> tuple[list[str], list[str]]:
 
     sent: list[str] = []
     errors: list[str] = []
-    kakao_cfg = cfg.get("kakao") or {}
+    kakao_cfg = db.merge_report_kakao(cfg.get("kakao") or {})
     has_template = bool((kakao_cfg.get("pf_id") or "").strip() and (kakao_cfg.get("template_id") or "").strip())
 
     if email_on:
@@ -303,7 +303,12 @@ def _dispatch_channels(subject: str, body: str) -> tuple[list[str], list[str]]:
             errors.append(f"이메일: {exc}")
     if sms_on:
         try:
-            _send_kakao(kakao_cfg, body, force_lms=True)
+            import solapi_sms
+
+            sms = solapi_sms.SolapiSms.from_config(kakao_cfg)
+            result = sms.send_lms(kakao_cfg.get("to_number") or "", body, subject=subject[:40])
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error") or "문자 발송 실패")
             sent.append("문자")
         except Exception as exc:
             errors.append(f"문자: {exc}")
@@ -349,6 +354,7 @@ def _send_email(email_cfg: dict[str, Any], subject: str, body: str) -> None:
 
 
 def _send_kakao(kakao_cfg: dict[str, Any], body: str, *, force_lms: bool = False) -> None:
+    kakao_cfg = db.merge_report_kakao(kakao_cfg)
     api_key = (kakao_cfg.get("solapi_api_key") or "").strip()
     api_secret = (kakao_cfg.get("solapi_api_secret") or "").strip()
     to_number = _digits(kakao_cfg.get("to_number"))

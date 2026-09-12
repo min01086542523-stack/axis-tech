@@ -163,8 +163,8 @@ DEFAULT_COMPANY = {
     "company_name": "엑스테크 Axis Tech",
     "ceo_name": "민현기",
     "address": "충남 천안시 서북구 입장면 연곡로",
-    "biz_type": "제조업",
-    "biz_item": "금속가공제품 / 자동화설비",
+    "biz_type": "제조업 외",
+    "biz_item": "기타도급 외",
     "phone": "070-8211-3360",
     "fax": "031-256-3853",
     "email": "accounts@axistech.co.kr",
@@ -369,6 +369,8 @@ def _ensure_company_profile() -> None:
         ceo = str(row["ceo_name"] or "")
         fax = str(row["fax"] or "")
         addr = str(row["address"] or "")
+        biz_type = str(row["biz_type"] or "")
+        biz_item = str(row["biz_item"] or "")
         if (
             ceo in ("", "김태성", "대표이사")
             or fax in ("", "031-495-1288")
@@ -385,6 +387,21 @@ def _ensure_company_profile() -> None:
                     DEFAULT_COMPANY["ceo_name"],
                     DEFAULT_COMPANY["fax"],
                     DEFAULT_COMPANY["address"],
+                    _now(),
+                ),
+            )
+        if biz_type == "제조업" and (
+            "금속가공" in biz_item or biz_item == "금속가공제품 / 자동화설비"
+        ):
+            conn.execute(
+                """
+                UPDATE company_profile
+                SET biz_type = ?, biz_item = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (
+                    DEFAULT_COMPANY["biz_type"],
+                    DEFAULT_COMPANY["biz_item"],
                     _now(),
                 ),
             )

@@ -293,6 +293,11 @@ def build_dashboard() -> dict[str, Any]:
     return {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "today": today,
+        "links": {
+            "streamlit": "https://axis-tech-n8xg6ren3aaks7dyv2q8f2.streamlit.app/",
+            "mobile": "https://mes-mhk-6.vercel.app/",
+            "salon": "https://hueh-salon.vercel.app/",
+        },
         "econtract": {
             "url": econtract_url,
             "local": econtract_local,

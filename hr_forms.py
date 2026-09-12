@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -263,7 +265,9 @@ def _center_on_page(ws: Worksheet) -> None:
     ws.print_options.horizontalCentered = True
     ws.print_options.gridLines = False
     try:
-        ws.sheet_view.view = "pageLayout"
+        ws.sheet_view.view = "normal"
+        ws.sheet_view.zoomScale = 100
+        ws.sheet_view.zoomScaleNormal = 100
     except Exception:
         pass
     if one_page:
@@ -282,21 +286,72 @@ def _center_on_page(ws: Worksheet) -> None:
 def _center_workbook(workbook) -> None:
     for ws in workbook.worksheets:
         _center_on_page(ws)
+    try:
+        import excel_export
+
+        excel_export.normalize_workbook(workbook)
+    except Exception:
+        pass
 
 
-def default_form_path(doc_type: str, employee_name: str | None = None) -> Path:
+def default_form_path(
+    doc_type: str,
+    employee_name: str | None = None,
+    company_label: str | None = None,
+) -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     label = hr.DOC_TYPES.get(doc_type, doc_type)
+    firm = "".join(ch for ch in (company_label or "") if ch not in r'\/:*?"<>|')
+    if firm:
+        label = f"{label}_{firm}"
     who = "".join(ch for ch in (employee_name or "전체") if ch not in r'\/:*?"<>|')
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return OUTPUT_DIR / f"{label}_{who}_{stamp}.xlsx"
+
+
+def _safe_filename_part(text: str) -> str:
+    cleaned = "".join("_" if ch in r'\/:*?"<>|' else ch for ch in str(text or "").strip())
+    cleaned = "_".join(part for part in cleaned.replace(" ", "_").split("_") if part)
+    return cleaned or "문서"
+
+
+def save_client_export(payload: dict[str, Any], doc_label: str, person_name: str) -> Path | None:
+    """휴대폰에서 만든 PDF/PNG를 서식출력 폴더에 저장한다."""
+    raw = str(payload.get("pdf_base64") or payload.get("png_base64") or "").strip()
+    if not raw:
+        return None
+    blob = raw.split(",", 1)[-1]
+    try:
+        data = base64.b64decode(blob)
+    except Exception:
+        return None
+    if not data:
+        return None
+    head = data.lstrip()[:32].lower()
+    if head.startswith(b"<!doctype html") or head.startswith(b"<html"):
+        return None
+    is_png = data[:8] == b"\x89PNG\r\n\x1a\n"
+    is_pdf = data[:4] == b"%PDF"
+    if not is_png and not is_pdf:
+        return None
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    ext = ".png" if is_png else ".pdf"
+    stamp = datetime.now().strftime("%Y%m%d")
+    filename = f"{_safe_filename_part(doc_label)}_{_safe_filename_part(person_name)}_{stamp}{ext}"
+    path = OUTPUT_DIR / filename
+    if path.exists():
+        path = OUTPUT_DIR / f"{path.stem}_{datetime.now().strftime('%H%M%S')}{ext}"
+    path.write_bytes(data)
+    return path
 
 
 def open_exported(path: str | Path) -> None:
     target = Path(path)
     if not target.exists():
         raise hr.HrError("저장된 서식 파일을 찾을 수 없습니다.")
-    os.startfile(os.path.normpath(str(target)))
+    import excel_export
+
+    excel_export.open_exported(target)
 
 
 def export_employee_list(path: str | Path | None = None) -> Path:
@@ -313,6 +368,7 @@ def export_employee_list(path: str | Path | None = None) -> Path:
     _center_workbook(wb)
     brand.stamp_workbook_logos(wb)
     wb.save(path)
+    brand.lock_excel_pictures_no_select(path)
     return path
 
 
@@ -409,7 +465,7 @@ def _write_meta(ws: Worksheet, row: int, code: str, emp_no: str = "", last_col: 
 
 
 def _write_approval(ws: Worksheet, row: int, last_col: int = 4, *, compact: bool = False) -> int:
-    labels = ("보고", "검토", "승인") if compact else ("담당", "팀장", "대표")
+    labels = ("보고", "검토", "승인") if compact else ("담당", "팀장", "대표이사")
     stamp_h = 40 if compact else 46
     role_fill = LABEL_FILL if compact else HEADER_FILL
     stamp_mark = labels[-1]
@@ -455,15 +511,22 @@ def _write_person_table(
     *,
     mask_rrn: bool = False,
     last_col: int = 4,
+    include_rrn: bool = True,
 ) -> int:
-    rrn = link.rrn_masked if mask_rrn else hr_crypto.format_rrn(link.rrn)
-    rows = (
+    addr = (link.address or "").strip()
+    rows: list[tuple[str, str, str, str]] = [
         ("성명", link.name, "사원번호", link.emp_no),
-        ("주민등록번호", rrn, "연락처", link.phone or "-"),
+    ]
+    if include_rrn:
+        rrn = link.rrn_masked if mask_rrn else hr_crypto.format_rrn(link.rrn)
+        rows.append(("주민등록번호", rrn, "연락처", link.phone or "-"))
+    else:
+        rows.append(("연락처", link.phone or "-", "고용형태", link.employment_type or "-"))
+    rows.extend((
         ("부서", link.department or "-", "직급/직책", f"{link.job_title or '-'} / {link.job_position or '-'}"),
         ("입사일자", link.hire_date, "퇴사일자", link.resign_date or "-"),
-        ("주소", link.address or "-", "고용형태", link.employment_type or "-"),
-    )
+        ("주소", addr, "고용형태" if include_rrn else "비고", (link.employment_type or "-") if include_rrn else ""),
+    ))
     row = _write_section(ws, start_row, "인 적 사 항", last_col)
     for a, b, c, d in rows:
         _kv_row(ws, row, last_col, a, b, c, d)
@@ -657,8 +720,8 @@ def _write_dual_sign(
     left1, left2, right1, right2 = _sign_pair_columns(last_col)
     box_end = row + 3
     _clear_block(ws, row, 1, box_end, last_col)
-    _paint_range(ws, row, left1, row, left2, "대표이사", fill=WHITE, font=SIGN_LABEL_FONT)
-    _paint_range(ws, row, right1, row, right2, "담당자", fill=WHITE, font=SIGN_LABEL_FONT)
+    _paint_range(ws, row, left1, row, left2, left_title or "대표이사", fill=WHITE, font=SIGN_LABEL_FONT)
+    _paint_range(ws, row, right1, row, right2, right_title or "담당자", fill=WHITE, font=SIGN_LABEL_FONT)
     _paint_range(
         ws, row + 1, left1, row + 1, left2,
         info["ceo_name"],
@@ -666,8 +729,18 @@ def _write_dual_sign(
         font=SIGN_NAME_FONT,
         align=CENTER,
     )
+    _paint_range(
+        ws, row + 1, right1, row + 1, right2,
+        signer or "",
+        fill=WHITE,
+        font=SIGN_NAME_FONT,
+        align=CENTER,
+    )
     _write_stamp_cell(ws, row + 2, left1, box_end, left2, "직인")
     _write_stamp_cell(ws, row + 2, right1, box_end, right2, "인")
+    sig = str(getattr(ws, "_esign_png", "") or "")
+    if sig:
+        _embed_signature_png(ws, sig, row + 2, right1)
     ws.row_dimensions[row].height = 16
     ws.row_dimensions[row + 1].height = 18
     for r in range(row + 2, box_end + 1):
@@ -696,6 +769,178 @@ def _write_sign_block(
     return _write_cert_closing(ws, row, last_col)
 
 
+def _write_consent_sign(ws: Worksheet, row: int, last_col: int = 4, *, end_gap: int = 1) -> int:
+    """개인정보동의서: 회사명·대표이사+법인인감 / 정보동의자·동의인·서명."""
+    today = datetime.now().strftime("%Y년    %m월    %d일")
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=last_col)
+    date_cell = ws.cell(row=row, column=1, value=today)
+    date_cell.font = BODY_FONT
+    date_cell.alignment = CENTER
+    ws.row_dimensions[row].height = 22
+    row += 1
+    left1, left2, right1, right2 = _sign_pair_columns(last_col)
+    box_end = row + 3
+    _clear_block(ws, row, 1, box_end, last_col)
+    _paint_range(
+        ws, row, left1, row, left2,
+        "(주)엑스테크 Axis Tech",
+        fill=WHITE,
+        font=SIGN_LABEL_FONT,
+    )
+    _paint_range(
+        ws, row, right1, row, right2,
+        "정보동의자",
+        fill=WHITE,
+        font=SIGN_LABEL_FONT,
+    )
+    ceo_text = "대표이사  민현기"
+    # 셀에는 비워 두고, 대표이사·인감은 아래로 10mm 이동한 위치에 그림으로 배치
+    _paint_range(ws, row + 1, left1, row + 1, left2, "", fill=WHITE, align=LEFT)
+    _paint_range(ws, row + 1, right1, row + 1, right2, "", fill=WHITE, align=LEFT)
+    for r in range(row + 2, box_end + 1):
+        _paint_range(ws, r, left1, r, left2, "", fill=WHITE)
+        _paint_range(ws, r, right1, r, right2, "", fill=WHITE)
+    _embed_consent_ceo_with_seal(
+        ws, row + 1, left1, last_col, ceo_text,
+        offset_right_mm=30.0,
+        offset_down_mm=10.0,
+    )
+    _embed_consent_signer_guide(
+        ws, row + 1, right1, last_col,
+        offset_right_mm=33.0, offset_down_mm=10.0,
+    )
+    sig = str(getattr(ws, "_esign_png", "") or "")
+    if sig:
+        _embed_signature_png(ws, sig, row + 2, right1)
+    ws.row_dimensions[row].height = 16
+    ws.row_dimensions[row + 1].height = 24
+    for r in range(row + 2, box_end + 1):
+        ws.row_dimensions[r].height = 22
+    _unborder(ws, row, 1, box_end, last_col)
+    return _write_end_mark(ws, box_end + max(1, end_gap), last_col)
+
+
+def _mm_to_px(mm: float) -> float:
+    return float(mm) * 96.0 / 25.4
+
+
+def _embed_consent_ceo_with_seal(
+    ws: Worksheet,
+    base_row: int,
+    left_col: int,
+    last_col: int,
+    ceo_text: str,
+    *,
+    seal_size_px: int = 56,
+    offset_right_mm: float = 0.0,
+    offset_down_mm: float = 0.0,
+    seal_up_mm: float = 3.0,
+) -> None:
+    """대표이사 민현기를 이동한 뒤, 바로 옆에 법인인감을 붙인다."""
+    import econtract_seal
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    from openpyxl.drawing.image import Image as XLImage
+
+    font_px = max(1, int(round(11 * 96.0 / 72.0)))  # 11pt
+    try:
+        font = ImageFont.truetype(r"C:\Windows\Fonts\gulim.ttc", font_px)
+    except OSError:
+        try:
+            font = ImageFont.truetype(r"C:\Windows\Fonts\malgun.ttf", font_px)
+        except OSError:
+            font = ImageFont.load_default()
+
+    probe = ImageDraw.Draw(PILImage.new("RGBA", (8, 8), (0, 0, 0, 0)))
+    bbox = probe.textbbox((0, 0), ceo_text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = max(bbox[3] - bbox[1], font_px)
+    pad = 4
+    canvas = PILImage.new("RGBA", (text_w + pad * 2, text_h + pad * 2), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((pad - bbox[0], pad - bbox[1]), ceo_text, font=font, fill=(0, 0, 0, 255))
+    buf = BytesIO()
+    canvas.save(buf, format="PNG")
+    buf.seek(0)
+    text_img = XLImage(buf)
+    text_img.width = text_w + pad * 2
+    text_img.height = text_h + pad * 2
+
+    base_x = sum(brand._col_px(ws, c, last_col) for c in range(1, left_col)) + 4.0
+    base_x += _mm_to_px(offset_right_mm)
+    base_y = sum(brand._row_h_px(ws, r) for r in range(1, base_row))
+    base_y += max(0.0, (brand._row_h_px(ws, base_row) - text_img.height) / 2.0)
+    base_y += _mm_to_px(offset_down_mm)
+
+    text_img.anchor = brand._anchor_at(
+        ws, base_x, base_y, text_img.width, text_img.height, last_col
+    )
+    ws.add_image(text_img)
+
+    seal_data = econtract_seal.render_png(econtract_seal.SEAL_AXIS)
+    seal = XLImage(BytesIO(seal_data))
+    seal.width = seal_size_px
+    seal.height = seal_size_px
+    seal_x = base_x + text_img.width + 2.0
+    seal_y = base_y + max(0.0, (text_img.height - seal_size_px) / 2.0)
+    seal_y -= _mm_to_px(seal_up_mm)
+    seal.anchor = brand._anchor_at(ws, seal_x, seal_y, seal_size_px, seal_size_px, last_col)
+    ws.add_image(seal)
+
+
+def _embed_consent_signer_guide(
+    ws: Worksheet,
+    base_row: int,
+    right_col: int,
+    last_col: int,
+    *,
+    offset_right_mm: float = 0.0,
+    offset_down_mm: float = 0.0,
+) -> None:
+    """동의인 :(검정) — 35mm — 서명(20%) 가이드를 오프셋 위치에 올린다."""
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+    from openpyxl.drawing.image import Image as XLImage
+
+    gap_mm = 35.0
+    font_px = max(1, int(round(11 * 96.0 / 72.0)))  # 11pt
+    try:
+        font = ImageFont.truetype(r"C:\Windows\Fonts\gulim.ttc", font_px)
+    except OSError:
+        try:
+            font = ImageFont.truetype(r"C:\Windows\Fonts\malgun.ttf", font_px)
+        except OSError:
+            font = ImageFont.load_default()
+
+    gap_px = int(round(_mm_to_px(gap_mm)))
+    left_text = "동의인 :"
+    right_text = "서명"
+    probe = ImageDraw.Draw(PILImage.new("RGBA", (8, 8), (0, 0, 0, 0)))
+    lb = probe.textbbox((0, 0), left_text, font=font)
+    rb = probe.textbbox((0, 0), right_text, font=font)
+    left_w = lb[2] - lb[0]
+    right_w = rb[2] - rb[0]
+    text_h = max(lb[3] - lb[1], rb[3] - rb[1], font_px)
+    width = left_w + gap_px + right_w + 8
+    height = text_h + 8
+    canvas = PILImage.new("RGBA", (width, height), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(canvas)
+    y0 = (height - text_h) / 2 - lb[1]
+    draw.text((2 - lb[0], y0), left_text, font=font, fill=(0, 0, 0, 255))  # 검정
+    draw.text((2 + left_w + gap_px - rb[0], y0), right_text, font=font, fill=(204, 204, 204, 255))  # 20%
+    buf = BytesIO()
+    canvas.save(buf, format="PNG")
+    buf.seek(0)
+    img = XLImage(buf)
+    img.width = width
+    img.height = height
+    x = sum(brand._col_px(ws, c, last_col) for c in range(1, right_col))
+    x += 4.0 + _mm_to_px(offset_right_mm)
+    y = sum(brand._row_h_px(ws, r) for r in range(1, base_row))
+    y += max(0.0, (brand._row_h_px(ws, base_row) - height) / 2.0)
+    y += _mm_to_px(offset_down_mm)
+    img.anchor = brand._anchor_at(ws, x, y, width, height, last_col)
+    ws.add_image(img)
+
+
 def _need_link(link: hr.EmployeeLink | None, title: str) -> hr.EmployeeLink:
     if link is None:
         raise hr.HrError(f"{title}은(는) 사원을 선택하세요.")
@@ -712,6 +957,7 @@ def export_form(
     path = Path(path)
     wb = Workbook()
     ws = wb.active
+    ws._esign_png = str(extra.get("signature_png") or "")
     link = hr.get_employee_link(employee_id) if employee_id is not None else None
     if link is not None:
         if extra.get("form_rrn"):
@@ -730,6 +976,10 @@ def export_form(
             link.job_title = str(extra["form_title"]).strip()
         if extra.get("form_position") is not None:
             link.job_position = str(extra["form_position"]).strip()
+        if extra.get("form_address") is not None:
+            link.address = str(extra.get("form_address") or "").strip()
+        elif extra.get("worker_address") is not None:
+            link.address = str(extra.get("worker_address") or "").strip()
 
     builders = {
         "PAYROLL_LEDGER": _build_payroll_ledger,
@@ -753,8 +1003,38 @@ def export_form(
     if builder is None:
         raise hr.HrError("알 수 없는 서식입니다.")
     payload = builder(ws, link, extra)
+    if extra.get("company_code"):
+        payload.setdefault("company_code", extra["company_code"])
+        payload.setdefault(
+            "company_label",
+            extra.get("company_label") or hr.contract_company_label(str(extra["company_code"])),
+        )
+    if extra.get("esign") or extra.get("econtract"):
+        for key in (
+            "signature_png", "form_rrn", "worker_name", "purpose", "reason",
+            "last_work_date", "year", "plan_text", "months", "request_date",
+            "amount", "account_name", "vat", "pay_method", "remark",
+            "employment_type", "esign", "form_hire", "department",
+            "form_address", "worker_address", "address",
+        ):
+            if extra.get(key) not in (None, "") and key not in payload:
+                payload[key] = extra[key]
     _center_workbook(wb)
-    if doc_type == "EMPLOYMENT_CONTRACT":
+    skip_logo = extra.get("skip_logo")
+    if skip_logo is None:
+        skip_logo = bool(
+            extra.get("econtract")
+            or (extra.get("company_code") and extra.get("company_code") != hr.DEFAULT_CONTRACT_COMPANY)
+        )
+    else:
+        skip_logo = bool(skip_logo)
+    if extra.get("company_code") == "AXIS":
+        skip_logo = False
+    if doc_type == "EMPLOYMENT_CONTRACT" and extra.get("econtract"):
+        ws.page_setup.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 1
+    elif doc_type == "EMPLOYMENT_CONTRACT":
         _10cm = 1.0 / 2.54
         _15cm = 1.5 / 2.54
         ws.page_margins.top = _10cm
@@ -771,7 +1051,7 @@ def export_form(
         if stretch_last > 0:
             last_h = _row_pt(ws, stretch_last)
             ws.row_dimensions[stretch_last].height = max(10.0, last_h - 5.0)
-        if logo_row:
+        if logo_row and not skip_logo:
             _place_contract_logo(ws, logo_row)
         ws.page_setup.fitToPage = True
         ws.page_setup.fitToWidth = 1
@@ -783,9 +1063,17 @@ def export_form(
             ws.sheet_properties.pageSetUpPr.fitToPage = True
         except Exception:
             pass
-    brand.stamp_workbook_logos(wb)
+    if not skip_logo:
+        brand.stamp_workbook_logos(wb)
     wb.save(path)
-    hr.issue_document(doc_type, employee_id, payload, file_path=str(path))
+    brand.lock_excel_pictures_no_select(path)
+    hr.issue_document(
+        doc_type,
+        employee_id,
+        payload,
+        file_path=str(path),
+        company_code=str(extra.get("company_code") or payload.get("company_code") or ""),
+    )
     return path
 
 
@@ -1089,7 +1377,10 @@ def _build_resignation(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[
     row += 1
     row = _write_note(ws, row, "근거: 근로기준법 제15조·제23조, 민법 제660조(기간의 약정 없는 고용의 해지통고). 본 서면은 사직의 의사표시입니다.")
     row += 1
-    _write_sign_block(ws, row, link.name, left_title="접수 (회사)", right_title="신청인")
+    _write_sign_block(
+        ws, row, link.name,
+        left_title="접수 (회사)", right_title="신청인",
+    )
     return {"last_work_date": last_day, "reason": reason}
 
 
@@ -1135,7 +1426,7 @@ def _build_consent(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str,
                 "동의 표시",
                 "[ 동의함 ] 개인정보 수집·이용 (필수)    [ 동의함 ] 고유식별정보(주민등록번호) 처리 (필수)\n"
                 "[ 동의함 ] 법령에 따른 제3자 제공 (4대보험·세무 등, 필수)\n"
-                f"동의일자: {consent_date}    동의자: {link.name}",
+                f"동의일자: {consent_date}",
             ),
         ],
         compact=True,
@@ -1145,7 +1436,8 @@ def _build_consent(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str,
         row,
         "회사는 처리 목적 달성 또는 보유기간 경과 시 지체 없이 파기합니다. 정보주체는 열람·정정·삭제·처리정지 요구를 할 수 있습니다.",
     )
-    _write_sign_block(ws, row, link.name, left_title="회사", right_title="정보주체", end_gap=1)
+    ws.row_dimensions[row].height = 15
+    _write_consent_sign(ws, row + 1, end_gap=1)
     return {"consent_date": consent_date}
 
 
@@ -1248,7 +1540,7 @@ def _build_expense(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str,
         ws, "지 출 품 의 서", "지출품의서",
         approval=True, doc_code="EX", emp_no=link.emp_no,
     )
-    row = _write_person_table(ws, link, row, mask_rrn=True)
+    row = _write_person_table(ws, link, row, mask_rrn=True, include_rrn=False)
     row += 1
     fields = (
         ("품의일자", request_date, "계정과목", extra.get("account_name") or "(계정 기재)"),
@@ -1299,12 +1591,16 @@ def _build_vacation_plan(ws: Worksheet, link: hr.EmployeeLink | None, extra: dic
     _outline(ws, row, 1, row, 4)
     row += 2
     grid_top = row
+    months = extra.get("months") or {}
     for i, month in enumerate(range(1, 13)):
         col = (i % 4) + 1
         if col == 1 and i:
             row += 2
         _cell(ws, row, col, f"{month}월 사용예정", fill=HEADER_FILL, center=True)
-        _cell(ws, row + 1, col, "")
+        planned = ""
+        if isinstance(months, dict):
+            planned = str(months.get(str(month)) or months.get(month) or "")
+        _cell(ws, row + 1, col, planned)
         ws.row_dimensions[row + 1].height = 28
         ws.cell(row=row + 1, column=col).fill = WHITE
     _outline(ws, grid_top, 1, row + 1, 4)
@@ -1408,6 +1704,25 @@ def _build_tool_ledger(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[
     return {"count": len(records), "qty_in": total_in, "qty_out": total_out}
 
 
+def _place_axis_header_logo(ws: Worksheet, last_col: int) -> None:
+    """엑스테크 전자계약서 오른쪽 위에 로고를 붙인다. 가운데 워터마크는 stamp에서 15%로 넣는다."""
+    from openpyxl.drawing.image import Image as XLImage
+
+    path = brand.LOGO_DARK if brand.LOGO_DARK.exists() else brand.LOGO_LIGHT
+    if not path.exists():
+        return
+    img = XLImage(str(path))
+    width_px = 56
+    height_px = max(1, int((img.height or width_px) * width_px / float(img.width or 1)))
+    img.width = width_px
+    img.height = height_px
+    sheet_w = sum(brand._col_px(ws, col, last_col) for col in range(1, last_col + 1))
+    x = max(0.0, sheet_w - width_px - 4)
+    img.anchor = brand._anchor_at(ws, x, 3.0, width_px, height_px, last_col)
+    ws.add_image(img)
+    ws._axis_footer_logo = True
+
+
 def _place_contract_logo(ws: Worksheet, logo_row: int) -> None:
     """서명란 바로 아래, 문서 가로 중앙에 로고를 붙인다."""
     from openpyxl.drawing.image import Image as XLImage
@@ -1431,12 +1746,593 @@ def _place_contract_logo(ws: Worksheet, logo_row: int) -> None:
     ws._axis_footer_logo = True
 
 
+def _econtract_int(value: Any, default: int) -> int:
+    text = str(value or "").replace(",", "").replace("원", "").strip()
+    if not text:
+        return default
+    try:
+        return int(round(float(text)))
+    except ValueError:
+        return default
+
+
+def save_econtract(payload: dict[str, Any]) -> dict[str, Any]:
+    """전자근로계약서 저장 → 인사서식 근로계약서 이력."""
+    name = str(payload.get("name") or "").strip()
+    rrn = str(payload.get("rrn") or "").strip()
+    if not name:
+        raise hr.HrError("근로자 성명을 입력하세요.")
+    try:
+        rrn = hr_crypto.normalize_rrn(rrn)
+    except hr_crypto.HrCryptoError as exc:
+        raise hr.HrError(str(exc)) from exc
+    try:
+        year = int(payload.get("year") or datetime.now().year)
+        month = int(payload.get("month") or datetime.now().month)
+        day = int(payload.get("day") or datetime.now().day)
+        signed = datetime(year, month, day).strftime("%Y-%m-%d")
+    except ValueError as exc:
+        raise hr.HrError("계약 일자가 올바르지 않습니다.") from exc
+    row = hr.find_employee_by_rrn(rrn)
+    if row is None:
+        try:
+            emp_id = hr.insert_employee(
+                emp_no=hr.next_emp_no("EC"),
+                name=name,
+                rrn=rrn,
+                hire_date=signed,
+                department="생산",
+                job_title="조립",
+                job_position="",
+                employment_type="일당제",
+                address=str(payload.get("worker_address") or payload.get("form_address") or "").strip(),
+                hourly_wage=12750,
+                tax_type=hr.TAX_BUSINESS,
+                annual_leave_days=0,
+            )
+        except hr.HrError:
+            row = hr.find_employee_by_rrn(rrn)
+            if row is None:
+                raise
+            emp_id = int(row["id"])
+    else:
+        emp_id = int(row["id"])
+        patch: dict[str, Any] = {}
+        if name and name != str(row["name"] or "").strip():
+            patch["name"] = name
+        if not str(row["hire_date"] or "").strip():
+            patch["hire_date"] = signed
+        worker_addr = str(payload.get("worker_address") or payload.get("form_address") or "").strip()
+        if worker_addr:
+            patch["address"] = worker_addr
+        if patch:
+            hr.update_employee(emp_id, **patch)
+    company = str(payload.get("company") or NAEUN_COMPANY).strip() or NAEUN_COMPANY
+    workplace = str(payload.get("workplace") or NAEUN_WORKPLACE).strip() or NAEUN_WORKPLACE
+    job = str(payload.get("job") or NAEUN_JOB).strip() or NAEUN_JOB
+    work_hours = str(payload.get("work_hours") or "09:00 ~ 18:00").strip() or "09:00 ~ 18:00"
+    break_hours = str(payload.get("break_hours") or "12:00 ~ 13:00").strip() or "12:00 ~ 13:00"
+    address = str(payload.get("address") or NAEUN_ADDRESS).strip() or NAEUN_ADDRESS
+    base_pay = _econtract_int(payload.get("base_pay"), DAILY_BASE)
+    weekly_pay = _econtract_int(payload.get("weekly_pay"), DAILY_WEEKLY)
+    incentive_pay = _econtract_int(payload.get("incentive_pay"), DAILY_INCENTIVE)
+    daily_wage = _econtract_int(payload.get("daily_wage"), base_pay + weekly_pay + incentive_pay)
+    company_code = str(payload.get("company_code") or "ECONTRACT").strip()
+    if company_code not in hr.ELECTRONIC_CONTRACT_CODES:
+        company_code = "ECONTRACT"
+    extra = {
+        "econtract": True,
+        "skip_logo": company_code != "AXIS",
+        "company_code": company_code,
+        "company_label": hr.contract_company_label(company_code) or hr.CONTRACT_COMPANIES["ECONTRACT"],
+        "form_rrn": rrn,
+        "form_hire": signed,
+        "worker_name": name,
+        "signed_on": signed,
+        "signature_png": str(payload.get("signature") or ""),
+        "year": year,
+        "month": month,
+        "day": day,
+        "company": company,
+        "address": address,
+        "worker_address": str(payload.get("worker_address") or payload.get("form_address") or "").strip(),
+        "form_address": str(payload.get("worker_address") or payload.get("form_address") or "").strip(),
+        "workplace": workplace,
+        "job": job,
+        "work_hours": work_hours,
+        "break_hours": break_hours,
+        "base_pay": base_pay,
+        "weekly_pay": weekly_pay,
+        "incentive_pay": incentive_pay,
+        "daily_wage": daily_wage,
+    }
+    path = default_form_path("EMPLOYMENT_CONTRACT", name, extra["company_label"])
+    saved = export_form("EMPLOYMENT_CONTRACT", path, employee_id=emp_id, extra=extra)
+    doc_label = "Axis Tech 전자계약서" if company_code == "AXIS" else "전자근로계약서"
+    exported = save_client_export(payload, doc_label, name)
+    if exported:
+        hr.update_latest_document_file(emp_id, "EMPLOYMENT_CONTRACT", str(exported))
+    return {
+        "ok": True,
+        "employee_id": emp_id,
+        "file": str(exported or saved),
+        "excel": str(saved),
+        "pdf": str(exported) if exported else "",
+    }
+
+
+ESIGN_DOC_TYPES = frozenset(
+    {"CERT_EMPLOYMENT", "RESIGNATION", "VACATION_PLAN", "EXPENSE_REQUEST"}
+)
+
+
+def _employee_from_name(name: str, extra: dict[str, Any]) -> int | None:
+    matches = hr.find_employees_by_name(name)
+    if not matches:
+        return None
+    active = [row for row in matches if int(row["is_active"] or 0)]
+    row = (active or matches)[0]
+    emp_id = int(row["id"])
+    patch: dict[str, Any] = {}
+    dept = str(extra.get("department") or extra.get("dept") or "").strip()
+    title = str(extra.get("job_title") or extra.get("title") or "").strip()
+    if extra.get("department") and dept:
+        patch["department"] = dept
+    if extra.get("job_title") and title:
+        patch["job_title"] = title
+    if extra.get("phone"):
+        patch["phone"] = str(extra["phone"])
+    addr = str(extra.get("address") or extra.get("form_address") or extra.get("worker_address") or "").strip()
+    if addr:
+        patch["address"] = addr
+    if patch:
+        hr.update_employee(emp_id, **patch)
+    return emp_id
+
+
+def _employee_from_esign(name: str, rrn: str, hire_date: str, extra: dict[str, Any]) -> int:
+    row = hr.find_employee_by_rrn(rrn)
+    dept = str(extra.get("department") or extra.get("dept") or "생산").strip() or "생산"
+    title = str(extra.get("job_title") or extra.get("title") or "조립").strip() or "조립"
+    if row is None:
+        try:
+            return hr.insert_employee(
+                emp_no=hr.next_emp_no("EC"),
+                name=name,
+                rrn=rrn,
+                hire_date=hire_date,
+                department=dept,
+                job_title=title,
+                job_position=str(extra.get("job_position") or ""),
+                employment_type=str(extra.get("employment_type") or "정규직"),
+                address=str(extra.get("address") or extra.get("form_address") or extra.get("worker_address") or ""),
+                hourly_wage=12750,
+                tax_type=hr.TAX_BUSINESS,
+                annual_leave_days=0,
+            )
+        except hr.HrError:
+            row = hr.find_employee_by_rrn(rrn)
+            if row is None:
+                raise
+            return int(row["id"])
+    emp_id = int(row["id"])
+    patch: dict[str, Any] = {}
+    if name and name != str(row["name"] or "").strip():
+        patch["name"] = name
+    if hire_date and not str(row["hire_date"] or "").strip():
+        patch["hire_date"] = hire_date
+    if extra.get("department"):
+        patch["department"] = dept
+    if extra.get("job_title"):
+        patch["job_title"] = title
+    if extra.get("employment_type"):
+        patch["employment_type"] = str(extra["employment_type"])
+    if extra.get("phone"):
+        patch["phone"] = str(extra["phone"])
+    if extra.get("form_resign") or extra.get("last_work_date"):
+        patch["resign_date"] = str(extra.get("form_resign") or extra.get("last_work_date") or "")
+    addr = str(extra.get("address") or extra.get("form_address") or extra.get("worker_address") or "").strip()
+    if addr:
+        patch["address"] = addr
+    if patch:
+        hr.update_employee(emp_id, **patch)
+    return emp_id
+
+
+def save_esign_form(payload: dict[str, Any]) -> dict[str, Any]:
+    """휴대폰 엑스테크 전자서명 서식 → 인사서식 이력."""
+    doc_type = str(payload.get("doc_type") or "").strip()
+    if doc_type not in ESIGN_DOC_TYPES:
+        raise hr.HrError("지원하지 않는 전자서명 서식입니다.")
+    name = str(payload.get("name") or "").strip()
+    rrn = str(payload.get("rrn") or "").strip()
+    if not name:
+        raise hr.HrError("성명을 입력하세요.")
+    hire_date = str(payload.get("hire_date") or payload.get("form_hire") or datetime.now().strftime("%Y-%m-%d"))
+    if doc_type == "EXPENSE_REQUEST":
+        rrn = ""
+        emp_id = _employee_from_name(name, payload)
+    else:
+        try:
+            rrn = hr_crypto.normalize_rrn(rrn)
+        except hr_crypto.HrCryptoError as exc:
+            raise hr.HrError(str(exc)) from exc
+        emp_id = _employee_from_esign(name, rrn, hire_date, payload)
+    if not str(payload.get("signature") or "").strip() and doc_type != "CERT_EMPLOYMENT":
+        raise hr.HrError("서명을 먼저 완료하세요.")
+    months = payload.get("months") or {}
+    if isinstance(months, list):
+        months = {str(i + 1): months[i] for i in range(len(months))}
+    extra = {
+        "esign": True,
+        "skip_logo": False,
+        "company_code": "AXIS",
+        "company_label": "엑스테크 Axis Tech",
+        "form_rrn": rrn,
+        "form_hire": hire_date,
+        "form_dept": str(payload.get("department") or ""),
+        "form_title": str(payload.get("job_title") or ""),
+        "form_resign": str(payload.get("last_work_date") or payload.get("form_resign") or ""),
+        "worker_name": name,
+        "signature_png": str(payload.get("signature") or ""),
+        "purpose": str(payload.get("purpose") or payload.get("reason") or ""),
+        "reason": str(payload.get("reason") or payload.get("purpose") or ""),
+        "last_work_date": str(payload.get("last_work_date") or ""),
+        "year": _econtract_int(payload.get("year"), datetime.now().year),
+        "plan_text": str(payload.get("plan_text") or payload.get("reason") or ""),
+        "months": months,
+        "request_date": str(payload.get("request_date") or datetime.now().strftime("%Y-%m-%d")),
+        "amount": float(str(payload.get("amount") or "0").replace(",", "") or 0),
+        "account_name": str(payload.get("account_name") or ""),
+        "vat": str(payload.get("vat") or "별도"),
+        "pay_method": str(payload.get("pay_method") or "계좌이체"),
+        "remark": str(payload.get("remark") or ""),
+        "employment_type": str(payload.get("employment_type") or "정규직"),
+        "phone": str(payload.get("phone") or ""),
+        "form_address": str(payload.get("address") or payload.get("form_address") or "").strip(),
+        "worker_address": str(payload.get("address") or payload.get("worker_address") or payload.get("form_address") or "").strip(),
+    }
+    path = default_form_path(doc_type, name, extra["company_label"])
+    saved = None
+    if emp_id:
+        saved = export_form(doc_type, path, employee_id=emp_id, extra=extra)
+    exported = save_client_export(payload, hr.DOC_TYPES.get(doc_type, doc_type), name)
+    if exported and emp_id:
+        hr.update_latest_document_file(emp_id, doc_type, str(exported))
+    return {
+        "ok": True,
+        "employee_id": emp_id or 0,
+        "file": str(exported or saved),
+        "excel": str(saved or ""),
+        "pdf": str(exported) if exported else "",
+        "doc_type": doc_type,
+    }
+
+
+CONTRACT_FIRM_PROFILE: dict[str, dict[str, str]] = {
+    "BELLIE": {
+        "company_name": "(주)벨리푸드",
+        "ceo_name": "정연택",
+        "address": "경기도 의왕시 한밭들1길 11 성우벤처빌 B동 201호",
+    },
+    "MWTECH": {
+        "company_name": "(주)엠더블유테크",
+        "ceo_name": "정경환",
+        "address": "",
+    },
+    "SNTECH": {
+        "company_name": "(주)에스엔텍",
+        "ceo_name": "",
+        "address": "",
+    },
+    "SYSTA": {
+        "company_name": "(주)시스타",
+        "ceo_name": "유세권",
+        "address": "경기도 오산시 외삼미로5번길 38",
+    },
+    "BHKOREA": {
+        "company_name": "BH코리아",
+        "ceo_name": "",
+        "address": "",
+    },
+}
+NAEUN_COMPANY = "주식회사 나은미래"
+NAEUN_CEO = "민현기"
+NAEUN_ADDRESS = "경기도 안성시 비룡로 26, 상가 222호"
+NAEUN_WORKPLACE = "수원시 권선구 고색동 972번지, 3층"
+NAEUN_JOB = "소형전자제품 단순 조립 및 임가공"
+DAILY_WAGE = 102_000
+DAILY_BASE = 82_560
+DAILY_WEEKLY = 16_512
+DAILY_INCENTIVE = 2_928
+MIN_HOURLY = 10_320
+
+
+def _embed_corp_seal(ws: Worksheet, row: int, col: int, company_code: str) -> None:
+    import econtract_seal
+    from openpyxl.drawing.image import Image as XLImage
+
+    data = econtract_seal.render_png(econtract_seal.seal_name_for(company_code))
+    img = XLImage(BytesIO(data))
+    img.width = 88
+    img.height = 88
+    img.anchor = f"{get_column_letter(col)}{row}"
+    ws.add_image(img)
+
+
+def _embed_signature_png(ws: Worksheet, data_url: str, row: int, col: int) -> None:
+    raw = str(data_url or "").strip()
+    if not raw:
+        return
+    blob = raw.split(",", 1)[-1]
+    try:
+        data = base64.b64decode(blob)
+    except Exception:
+        return
+    if not data:
+        return
+    from openpyxl.drawing.image import Image as XLImage
+
+    img = XLImage(BytesIO(data))
+    width_px = 168
+    height_px = max(28, int((img.height or 48) * width_px / float(img.width or 1)))
+    height_px = min(height_px, 52)
+    img.width = width_px
+    img.height = height_px
+    img.anchor = f"{get_column_letter(col)}{row}"
+    ws.add_image(img)
+
+
+def _build_daily_econtract(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str, Any]) -> dict[str, Any]:
+    """나은미래 일당제 전자근로계약서. Axis 로고·상호를 넣지 않는다."""
+    worker = str(extra.get("worker_name") or (link.name if link else "")).strip()
+    try:
+        rrn_text = hr_crypto.format_rrn(str(extra.get("form_rrn") or (link.rrn if link else "")))
+    except Exception:
+        rrn_text = str(extra.get("form_rrn") or "")
+    year = extra.get("year") or datetime.now().year
+    month = extra.get("month") or datetime.now().month
+    day = extra.get("day") or datetime.now().day
+    signed = str(extra.get("signed_on") or (link.hire_date if link else ""))
+    company = str(extra.get("company") or NAEUN_COMPANY).strip() or NAEUN_COMPANY
+    workplace = str(extra.get("workplace") or NAEUN_WORKPLACE).strip() or NAEUN_WORKPLACE
+    job = str(extra.get("job") or NAEUN_JOB).strip() or NAEUN_JOB
+    work_hours = str(extra.get("work_hours") or "09:00 ~ 18:00").strip()
+    break_hours = str(extra.get("break_hours") or "12:00 ~ 13:00").strip()
+    address = str(extra.get("address") or NAEUN_ADDRESS).strip() or NAEUN_ADDRESS
+    worker_address = str(extra.get("worker_address") or extra.get("form_address") or (link.address if link else "") or "").strip()
+    company_code = str(extra.get("company_code") or "ECONTRACT")
+    base_pay = _econtract_int(extra.get("base_pay"), DAILY_BASE)
+    weekly_pay = _econtract_int(extra.get("weekly_pay"), DAILY_WEEKLY)
+    incentive_pay = _econtract_int(extra.get("incentive_pay"), DAILY_INCENTIVE)
+    daily_wage = _econtract_int(extra.get("daily_wage"), base_pay + weekly_pay + incentive_pay)
+    parts_total = base_pay + weekly_pay + incentive_pay
+
+    F = "굴림체"
+    T = "돋움체"
+    f8 = Font(name=F, size=8)
+    f8b = Font(name=F, size=8, bold=True)
+    f9 = Font(name=F, size=9)
+    f11b = Font(name=T, size=11, bold=True)
+    f16b = Font(name=T, size=16, bold=True)
+    gray_fill = PatternFill("solid", fgColor="F4F4F4")
+    white_fill = PatternFill("solid", fgColor="FFFFFF")
+    C = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    CL = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    TOP = Alignment(horizontal="left", vertical="top", wrap_text=True)
+
+    def style(cell, *, font=None, fill=None, align=None):
+        if font is not None:
+            cell.font = font
+        if fill is not None:
+            cell.fill = fill
+        if align is not None:
+            cell.alignment = align
+
+    def merge(r1, c1, r2, c2, value="", *, font=None, fill=None, align=None):
+        if r1 != r2 or c1 != c2:
+            ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
+        cell = ws.cell(row=r1, column=c1, value=value)
+        style(cell, font=font or f8, fill=fill or white_fill, align=align or C)
+        for row in range(r1, r2 + 1):
+            for col in range(c1, c2 + 1):
+                ws.cell(row, col).fill = fill or white_fill
+        return cell
+
+    def box(r1, c1, r2, c2):
+        for row in range(r1, r2 + 1):
+            for col in range(c1, c2 + 1):
+                ws.cell(row, col).border = Border(
+                    left=THIN_SIDE if col == c1 else THIN_SIDE,
+                    right=THIN_SIDE if col == c2 else THIN_SIDE,
+                    top=THIN_SIDE if row == r1 else THIN_SIDE,
+                    bottom=THIN_SIDE if row == r2 else THIN_SIDE,
+                )
+
+    def row_h(row, h):
+        ws.row_dimensions[row].height = h
+
+    ws.title = "전자근로계약서"
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToPage = True
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins = PageMargins(left=0.55, right=0.55, top=0.4, bottom=0.4, header=0.1, footer=0.1)
+    ws.print_options.horizontalCentered = True
+    try:
+        ws.sheet_view.showGridLines = False
+    except Exception:
+        pass
+    ws.oddFooter.left.text = ""
+    ws.oddFooter.center.text = ""
+    ws.oddFooter.right.text = ""
+
+    widths = [16, 14, 14, 14, 14, 16]
+    for ci, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    last = 6
+    r = 1
+    merge(r, 1, r, last, "ELECTRONIC EMPLOYMENT CONTRACT", font=Font(name=T, size=8, color="737373"), align=C)
+    row_h(r, 12)
+    r += 1
+    merge(r, 1, r, last, "전 자 근 로 계 약 서", font=f16b, align=C)
+    row_h(r, 28 if company_code == "AXIS" else 24)
+    r += 1
+    merge(r, 1, r, last, "일당제 · 주급 지급", font=f9, align=C)
+    row_h(r, 14)
+    r += 1
+    lead = (
+        f'사용자 {company}(대표이사 {NAEUN_CEO}, 이하 "사용자")와 근로자 {worker or "___________"}'
+        f'(이하 "근로자")는 다음과 같이 근로계약을 체결한다.'
+    )
+    merge(r, 1, r, last, lead, font=f9, align=TOP)
+    row_h(r, 28)
+    r += 1
+
+    articles = [
+        ("제1조 (근로형태)", "본 계약은 일당제 근로계약으로 한다. 근로자는 근로한 날에 대하여 아래 제5조의 일당을 지급받는다."),
+        ("제2조 (근무장소)", f"근로자의 근무장소는 {workplace}로 한다."),
+        ("제3조 (업무내용)", f"근로자의 업무는 {job}으로 한다."),
+        ("제4조 (근로시간)", f"근로시간은 {work_hours}로 하며, 휴게시간은 {break_hours}로 한다."),
+        (
+            "제5조 (임금)",
+            f"1일 임금은 아래와 같이 {daily_wage:,}원으로 한다.",
+        ),
+    ]
+    for heading, body in articles:
+        merge(r, 1, r, last, heading, font=f8b, align=CL)
+        row_h(r, 14)
+        r += 1
+        merge(r, 1, r, last, body, font=f8, align=TOP)
+        row_h(r, 18 if heading.startswith("제5") else 20)
+        r += 1
+
+    wage_rows = [
+        ("항목", "금액", True),
+        ("기본급", f"{base_pay:,}원", False),
+        ("주휴수당", f"{weekly_pay:,}원", False),
+        ("장려수당", f"{incentive_pay:,}원", False),
+        ("일당 합계", f"{parts_total:,}원", True),
+    ]
+    for label, amount, strong in wage_rows:
+        fill = gray_fill if strong else white_fill
+        font = f8b if strong else f8
+        merge(r, 1, r, 3, label, font=font, fill=fill, align=CL)
+        merge(r, 4, r, last, amount, font=font, fill=fill, align=C)
+        box(r, 1, r, last)
+        row_h(r, 15)
+        r += 1
+
+    more = [
+        ("제6조 (임금지급일)", "임금은 매주 수요일 (주급)에 근로자에게 지급한다."),
+        (
+            "제7조 (3일 미만 퇴사 시 임금)",
+            f"근로자가 근무 개시일부터 3일 미만으로 퇴사하는 경우, 제5조의 일당({daily_wage:,}원)을 지급하지 아니하고, "
+            f"최저임금(시급 {MIN_HOURLY:,}원) × 실근로시간만 계산하여 지급한다. 휴게시간은 제외하며, "
+            f"1일 8시간 근무 시 {base_pay:,}원을 지급한다.",
+        ),
+        (
+            "제8조 (기타)",
+            "본 계약서에 명시되지 않은 사항은 근로기준법 등 관련 법령과 일반적인 상관례에 따른다. "
+            "본 계약의 성립을 증명하기 위하여 당사자가 기명날인 또는 서명한다.",
+        ),
+    ]
+    for heading, body in more:
+        merge(r, 1, r, last, heading, font=f8b, align=CL)
+        row_h(r, 14)
+        r += 1
+        height = 36 if heading.startswith("제7") else 22
+        merge(r, 1, r, last, body, font=f8, align=TOP)
+        row_h(r, height)
+        r += 1
+
+    merge(r, 1, r, last, f"{year} 년    {month} 월    {day} 일", font=f11b, align=C)
+    row_h(r, 20)
+    r += 1
+
+    merge(r, 1, r, 3, "사용자", font=f8b, fill=gray_fill, align=C)
+    merge(r, 4, r, last, "근로자", font=f8b, fill=gray_fill, align=C)
+    box(r, 1, r, last)
+    row_h(r, 14)
+    sign_top = r
+    r += 1
+    merge(r, 1, r, 3, f"상호  {company}", font=f8, align=CL)
+    merge(r, 4, r, last, f"성명  {worker}", font=f8, align=CL)
+    box(r, 1, r, last)
+    row_h(r, 16)
+    r += 1
+    merge(r, 1, r, 3, f"주소  {address}", font=f8, align=CL)
+    merge(r, 4, r, last, f"주소  {worker_address}", font=f8, align=CL)
+    box(r, 1, r, last)
+    row_h(r, 16)
+    r += 1
+    merge(r, 1, r, 3, f"대표이사  {NAEUN_CEO}", font=f8, align=CL)
+    merge(r, 4, r, last, f"주민번호  {rrn_text}", font=f8, align=CL)
+    box(r, 1, r, last)
+    row_h(r, 18)
+    ceo_row = r
+    r += 1
+    merge(r, 1, r, 3, "", font=f8, align=C)
+    merge(r, 4, r, last, "서명", font=f8, align=CL)
+    box(r, 1, r, last)
+    row_h(r, 18)
+    ceo_row = r
+    r += 1
+    merge(r, 1, r, 3, "", font=f8, align=C)
+    merge(r, 4, r, last, "서명", font=f8, align=CL)
+    box(r, 1, r, last)
+    row_h(r, 52)
+    _embed_corp_seal(ws, ceo_row, 3, company_code)
+    _embed_signature_png(ws, str(extra.get("signature_png") or ""), r, 4)
+    box(sign_top, 1, r, last)
+    if company_code == "AXIS":
+        _place_axis_header_logo(ws, last)
+
+    return {
+        "econtract": True,
+        "company_code": company_code,
+        "company": company,
+        "company_label": hr.contract_company_label(company_code) or hr.CONTRACT_COMPANIES.get(company_code, ""),
+        "worker": worker,
+        "worker_name": worker,
+        "form_rrn": str(extra.get("form_rrn") or ""),
+        "address": address,
+        "worker_address": worker_address,
+        "form_address": worker_address,
+        "year": year,
+        "month": month,
+        "day": day,
+        "daily_wage": daily_wage,
+        "base_pay": base_pay,
+        "weekly_pay": weekly_pay,
+        "incentive_pay": incentive_pay,
+        "workplace": workplace,
+        "job": job,
+        "work_hours": work_hours,
+        "break_hours": break_hours,
+        "hire_date": signed,
+        "signature_png": str(extra.get("signature_png") or ""),
+    }
+
+
 def _build_employment_contract(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str, Any]) -> dict[str, Any]:
     """첨부 양식 기반 근로계약서 — 글씨 8pt, 1장 압축."""
+    if extra.get("econtract"):
+        return _build_daily_econtract(ws, link, extra)
     link = _need_link(link, "근로계약서")
     wage = float(link.hourly_wage or 0)
     etype = link.employment_type or "정규직"
     co = _company()
+    company_code = str(extra.get("company_code") or hr.DEFAULT_CONTRACT_COMPANY)
+    profile = CONTRACT_FIRM_PROFILE.get(company_code)
+    if profile:
+        co = {**co, **{key: value for key, value in profile.items() if value}}
+    keep_axis = company_code in ("", hr.DEFAULT_CONTRACT_COMPANY) and not extra.get("skip_logo")
+    workplace = extra.get("workplace_name") or (
+        "㈜엑스테크" if keep_axis else (co.get("company_name") or "회사")
+    )
 
     F = "굴림체"
     T = "돋움체"
@@ -1502,8 +2398,12 @@ def _build_employment_contract(ws: Worksheet, link: hr.EmployeeLink | None, extr
     ws.print_options.horizontalCentered = False
     try: ws.sheet_view.showGridLines = False
     except Exception: pass
-    ws.oddFooter.left.text = "AXIS TECH"
-    ws.oddFooter.right.text = "&P / &N"
+    if keep_axis:
+        ws.oddFooter.left.text = "AXIS TECH"
+        ws.oddFooter.right.text = "&P / &N"
+    else:
+        ws.oddFooter.left.text = ""
+        ws.oddFooter.right.text = ""
 
     # 회색 레이블 칸(1, 6열)을 넓히고 내용 칸을 맞춤
     widths = [13, 8, 8, 14, 6, 13, 8, 14, 6, 6]
@@ -1533,11 +2433,20 @@ def _build_employment_contract(ws: Worksheet, link: hr.EmployeeLink | None, extr
         border_range(rr, 1, rr, last_col)
         row_h(rr, height)
 
-    party_row(r, "상  호", co["company_name"], "성  명", "")
+    party_row(r, "상  호", co["company_name"], "성  명", str(extra.get("worker_name") or link.name or ""))
     r += 1
-    party_row(r, "대 표 자", co["ceo_name"], "주민등록번호", "")
+    rrn_text = ""
+    try:
+        rrn_text = hr_crypto.format_rrn(str(extra.get("form_rrn") or link.rrn or ""))
+    except Exception:
+        rrn_text = str(extra.get("form_rrn") or "")
+    party_row(r, "대 표 이 사", co["ceo_name"], "주민등록번호", rrn_text)
     r += 1
-    party_row(r, "주  소", co["address"], "주  소", "", height=13)
+    party_row(
+        r, "주  소", co["address"], "주  소",
+        str(extra.get("worker_address") or extra.get("form_address") or link.address or ""),
+        height=13,
+    )
     r += 1
 
     # ── 이래의 근로조건 문구 ──────────────────────────────────────────
@@ -1562,7 +2471,7 @@ def _build_employment_contract(ws: Worksheet, link: hr.EmployeeLink | None, extr
 
     # ① 근무장소
     article(r, "근무장소",
-        f"㈜엑스테크 내 및 \"갑\"이 지정하는 장소  /  업무내용: {link.job_title or '담당 직무'} {link.job_position or ''}  "
+        f"{workplace} 내 및 \"갑\"이 지정하는 장소  /  업무내용: {link.job_title or '담당 직무'} {link.job_position or ''}  "
         f"\"갑\"은 회사경영상 필요시 \"을\"의 근무장소 및 직종(업무내용)을 변경할 수 있다.",
         height=14)
     r += 1
@@ -1668,7 +2577,7 @@ def _build_employment_contract(ws: Worksheet, link: hr.EmployeeLink | None, extr
     row_h(r, SH)
     r += 1
 
-    label_cell(r, 2, "대 표 자")
+    label_cell(r, 2, "대 표 이 사")
     merge(r, 3, r, 4, co["ceo_name"], font=f8, fill=white_fill, align=CL)
     ws.cell(r, 5, "(인)")
     s(ws.cell(r, 5), font=f8, fill=white_fill, align=C)
@@ -1697,7 +2606,12 @@ def _build_employment_contract(ws: Worksheet, link: hr.EmployeeLink | None, extr
         ws.cell(logo_row, col).border = Border()
         ws.cell(logo_row, col).fill = white_fill
 
-    return {"hourly_wage": wage, "hire_date": link.hire_date}
+    return {
+        "hourly_wage": wage,
+        "hire_date": link.hire_date,
+        "company_code": company_code,
+        "company_label": hr.contract_company_label(company_code) or co["company_name"],
+    }
 
 
 def _build_cert_employment(ws: Worksheet, link: hr.EmployeeLink | None, extra: dict[str, Any]) -> dict[str, Any]:

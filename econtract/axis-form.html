@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>엑스테크 전자서명</title>
+  <script src="html2pdf.bundle.min.js" onerror="this.onerror=null;this.src='https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js'"></script>
+  <script src="export-pdf.js"></script>
+  <style>
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; overflow-x: hidden; max-width: 100%; }
+    body { font-family: "Noto Sans KR", "Malgun Gothic", sans-serif; background: #d7d2c8; color: #171717; }
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 8px; padding: 8px 12px;
+      background: rgba(215, 210, 200, .92);
+      border-bottom: 1px solid rgba(0,0,0,.05);
+    }
+    .topbar p { margin: 0; }
+    .topbar .t1 { font-size: 11px; font-weight: 700; }
+    .topbar .t2 { font-size: 9px; color: #525252; word-break: break-all; }
+    .badge { font-size: 9px; color: #fff; background: #262626; border-radius: 999px; padding: 3px 8px; white-space: nowrap; }
+    .badge.ok { background: #166534; }
+    main { padding: 8px 8px 160px; overflow-x: hidden; }
+    .sheet {
+      max-width: min(210mm, 100%); margin: 0 auto; background: #fff;
+      padding: 12px 12px 28px; box-shadow: 0 8px 30px rgba(0,0,0,.12);
+      font-size: 12px; line-height: 1.45; position: relative; overflow: visible;
+    }
+    .sheet > *:not(.sheet-wm):not(.axis-logo) { position: relative; z-index: 1; }
+    .sheet-wm, .axis-logo, .lock-mark {
+      pointer-events: none !important; user-select: none !important;
+      -webkit-user-select: none !important; -webkit-user-drag: none !important;
+      -webkit-touch-callout: none !important;
+    }
+    .sheet-wm {
+      position: absolute; left: 50%; top: 62%; transform: translate(-50%, -50%);
+      width: min(64%, 280px); height: 280px; z-index: 0;
+      background: url("axis-watermark.png") center / contain no-repeat;
+    }
+    table { position: relative; z-index: 4; }
+    input, textarea, select {
+      border: none; border-bottom: 1px solid #111; font: inherit;
+      padding: 8px 4px; background: transparent; min-width: 0; max-width: 100%;
+      font-size: 16px; pointer-events: auto !important; position: relative; z-index: 5;
+      -webkit-user-select: text; user-select: text; touch-action: manipulation;
+    }
+    #address, #workerAddress {
+      width: 100%; min-height: 44px; border: 1px solid #111;
+    }
+    .axis-logo {
+      position: absolute; top: 8px; right: 10px; height: 54px; width: auto; z-index: 2;
+    }
+    header { text-align: center; margin-bottom: 10px; padding-right: 62px; position: relative; z-index: 40; isolation: isolate; }
+    .en { font-size: 9px; letter-spacing: .16em; color: #737373; }
+    h1 { font-size: 22px; margin: 4px 0 2px; }
+    .sub.header-line {
+      display: flex; flex-wrap: wrap; justify-content: center; align-items: center;
+      gap: 4px; font-size: 12px; color: #444;
+    }
+    .header-addr {
+      font-size: 16px !important; line-height: 1.3; min-height: 44px; min-width: 12em;
+      flex: 1 1 200px; max-width: 100%; text-align: center; border: none;
+      border-bottom: 1px solid #111; padding: 10px 6px; background: #fff; color: #111;
+      pointer-events: auto !important; position: relative; z-index: 41;
+      -webkit-user-select: text !important; user-select: text !important;
+      touch-action: manipulation; -webkit-appearance: none; appearance: none;
+    }
+    h2 { font-size: 13px; margin: 14px 0 4px; }
+    p { margin: 0 0 6px; }
+    [hidden] { display: none !important; }
+    th, td { border: 1px solid #111; padding: 6px 8px; font-size: 12px; }
+    th { background: #f4f4f4; width: 32%; text-align: left; }
+    .row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; min-width: 0; }
+    .row b { min-width: 72px; flex: 0 0 auto; }
+    textarea { width: 100%; min-height: 72px; border: 1px solid #111; resize: vertical; }
+    .month-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; }
+    .month-grid label { font-size: 11px; color: #444; display: block; }
+    .month-grid input { width: 100%; }
+    .sign-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; margin-bottom: 28px; }
+    .sign-grid.company-only { grid-template-columns: 1fr; }
+    .sign-grid.cert-stamp {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 12px;
+    }
+    .sheet-end-logo {
+      display: flex;
+      align-items: flex-end;
+      margin-top: 8px;
+      min-height: 57px;
+      position: relative;
+      z-index: 2;
+    }
+    .sheet-end-logo.left { justify-content: flex-start; }
+    .sheet-end-logo.right { justify-content: flex-end; }
+    .foot-logo {
+      height: 57px;
+      width: auto;
+      display: block;
+      max-width: 46%;
+      object-fit: contain;
+      pointer-events: none !important;
+      user-select: none !important;
+      -webkit-user-select: none !important;
+      -webkit-user-drag: none !important;
+    }
+    .party { min-width: 0; }
+    .ceo-row {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      min-height: 80px; margin: 0; overflow: visible; position: relative; z-index: 6;
+    }
+    .ceo-row .ceo-name { white-space: nowrap; font-weight: 700; }
+    .seal {
+      width: 76px; height: 76px; min-width: 76px; min-height: 76px;
+      flex-shrink: 0; display: block; overflow: visible; object-fit: contain;
+      pointer-events: none !important; user-select: none !important;
+      -webkit-user-select: none !important; -webkit-user-drag: none !important;
+      -webkit-touch-callout: none !important;
+    }
+    .seal svg { width: 76px; height: 76px; display: block; overflow: visible; }
+    .sig-box {
+      border: 1px dashed #888; min-height: 88px; background: #fafafa;
+      display: flex; align-items: center; justify-content: center; cursor: pointer; color: #666;
+    }
+    .sig-box canvas, .sig-box img { width: 100%; height: 88px; display: block; pointer-events: none; }
+    .foot {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      display: flex; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+      background: #1f1f1f;
+    }
+    .foot button { flex: 1; min-width: 0; height: 44px; border: 0; border-radius: 8px; font-size: 14px; font-weight: 700; }
+    .ghost { background: #3f3f3f; color: #fff; }
+    .primary { background: #e8e4dc; color: #111; }
+    .save { background: #166534; color: #fff; }
+    .modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 40; align-items: center; justify-content: center; padding: 16px; }
+    .modal.on { display: flex; }
+    .pad { width: min(640px, 100%); background: #fff; border-radius: 12px; padding: 12px; }
+    .pad canvas { width: 100%; height: 220px; border: 1px solid #ccc; touch-action: none; }
+    .pad .acts, .id-acts { display: flex; gap: 8px; margin-top: 8px; }
+    .pad .acts button, .id-acts button { flex: 1; height: 40px; border: 0; border-radius: 8px; font-weight: 700; }
+    .msg { display: none; margin: 8px auto 0; max-width: 210mm; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+    .msg.ok { display: block; background: #dcfce7; color: #14532d; }
+    .msg.err { display: block; background: #fee2e2; color: #7f1d1d; }
+    .id-card {
+      width: min(380px, calc(100vw - 24px)); overflow: hidden;
+      background: linear-gradient(180deg, #f4c9d1 0%, #e8aab8 100%);
+      border-radius: 14px; padding: 14px; border: 1px solid #d9a3af;
+    }
+    .id-card h4 { margin: 0 0 10px; text-align: center; letter-spacing: .12em; }
+    .id-fields input { width: 100%; border: none; border-bottom: 1px solid #8a5964; font-weight: 700; margin-bottom: 8px; }
+    #idRrn { font-variant-numeric: tabular-nums; letter-spacing: 0; }
+    @media (max-width: 480px) {
+      .sign-grid, .month-grid { grid-template-columns: 1fr; }
+      .sign-grid.cert-stamp { display: flex; }
+      header { padding-right: 48px; }
+      .axis-logo { height: 42px; }
+      .foot-logo { height: 48px; }
+    }
+    @media print {
+      .topbar, .foot, .modal, .msg { display: none !important; }
+      body { background: #fff; }
+      main { padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div>
+      <p class="t1" id="topTitle">엑스테크 전자서명</p>
+      <p class="t2" id="lanHint">휴대폰 저장: __LAN_URL__</p>
+    </div>
+    <span class="badge" id="status">서명 필요</span>
+  </div>
+  <div id="flash" class="msg"></div>
+  <main>
+    <article class="sheet" id="sheet">
+      <img class="axis-logo lock-mark" src="axis-logo.png" alt="" draggable="false" />
+      <div class="sheet-wm lock-mark" aria-hidden="true"></div>
+      <header>
+        <p class="en" id="enTitle">AXIS TECH FORM</p>
+        <h1 id="docTitle">서식</h1>
+        <p class="sub header-line">
+          엑스테크 Axis Tech ·
+          <input type="text" id="headerAddress" class="header-addr" value="충남 천안시 서북구 입장면 연곡로" autocomplete="street-address" inputmode="text" enterkeyhint="done" />
+          · TEL 070-8211-3360
+        </p>
+      </header>
+      <p id="leadText">사용자 <b>엑스테크 Axis Tech</b> (대표이사 민현기)는 아래 사람이 재직 중임을 증명합니다.</p>
+      <table>
+        <tr><th>성명</th><td><input id="name" placeholder="성명" /></td></tr>
+        <tr id="rowRrn"><th>주민번호</th><td><input id="rrn" placeholder="000000-0000000" maxlength="14" inputmode="numeric" autocomplete="off" /></td></tr>
+        <tr><th>부서 / 직위</th><td><input id="department" placeholder="부서" /> / <input id="jobTitle" placeholder="직위" /></td></tr>
+        <tr><th>입사일</th><td><input id="hireDate" type="date" /></td></tr>
+        <tr id="rowAddress"><th>주소</th><td><input id="address" placeholder="주소" autocomplete="street-address" /></td></tr>
+        <tr id="rowEmpType"><th>고용형태</th><td><input id="empType" value="정규직" /></td></tr>
+        <tr id="rowPurpose"><th>용도</th><td><input id="purpose" value="제출용" /></td></tr>
+        <tr id="rowLastDay" hidden><th>최종 근무일</th><td><input id="lastWork" type="date" /></td></tr>
+        <tr id="rowReason" hidden><th>사직 사유</th><td><input id="reason" placeholder="사직 사유" /></td></tr>
+        <tr id="rowYear" hidden><th>대상 연도</th><td><input id="year" type="number" /></td></tr>
+        <tr id="rowDate" hidden><th>품의일자</th><td><input id="requestDate" type="date" /></td></tr>
+        <tr id="rowAmount" hidden><th>공급가액</th><td><input id="amount" inputmode="numeric" placeholder="0" /> 원</td></tr>
+        <tr id="rowAccount" hidden><th>계정과목</th><td><input id="account" placeholder="계정과목" /></td></tr>
+        <tr id="rowPay" hidden><th>지급방법 / 부가세</th><td><input id="payMethod" value="계좌이체" /> / <input id="vat" value="별도" /></td></tr>
+      </table>
+      <div id="monthWrap" hidden>
+        <h2>월별 사용 예정</h2>
+        <div class="month-grid" id="monthGrid"></div>
+      </div>
+      <input type="hidden" id="name2" />
+      <h2 id="bodyLabel">내용</h2>
+      <textarea id="bodyText"></textarea>
+      <div class="sign-grid" id="signGrid">
+        <div class="party" id="companySign">
+          <h3 id="companySignTitle">사용자 (회사)</h3>
+          <p id="companySignName">엑스테크 Axis Tech</p>
+          <div class="ceo-row">
+            <span>대표이사</span>
+            <span class="ceo-name">민현기</span>
+            <img class="seal lock-mark" id="corpSeal" src="seal-axis.png?v=20260908d" alt="직인" draggable="false" />
+          </div>
+        </div>
+        <div class="party" id="applicantSign">
+          <h3>신청인 서명</h3>
+          <div class="sig-box" id="sigPreview" onclick="openPad()">터치하여 서명</div>
+        </div>
+      </div>
+      <div class="sheet-end-logo right" id="sheetEndLogo">
+        <img class="foot-logo lock-mark" src="axis-logo-strong.png?v=20260908e" alt="" draggable="false" />
+      </div>
+    </article>
+  </main>
+  <div class="foot">
+    <button class="ghost" type="button" onclick="resetForm()">새로 작성</button>
+    <button class="primary" type="button" id="signBtn" onclick="openPad()">터치하여 서명하기</button>
+    <button class="save" type="button" onclick="event.preventDefault(); saveForm();">저장</button>
+  </div>
+  <div class="modal" id="idModal" onclick="if(event.target===this) closeIdCard()">
+    <div class="id-card" onclick="event.stopPropagation()">
+      <h4>주민등록증</h4>
+      <label>성명</label>
+      <input id="idName" placeholder="성명" />
+      <label>주민등록번호</label>
+      <input id="idRrn" inputmode="numeric" placeholder="000000-0000000" maxlength="14" />
+      <div class="id-acts">
+        <button class="ghost" type="button" onclick="closeIdCard()">닫기</button>
+        <button class="save" type="button" onclick="acceptIdCard()">확인</button>
+      </div>
+    </div>
+  </div>
+  <div class="modal" id="modal" onclick="if(event.target===this) closePad()">
+    <div class="pad" onclick="event.stopPropagation()">
+      <p style="margin:0 0 8px;font-weight:700;">신청인 서명</p>
+      <canvas id="pad" width="900" height="320"></canvas>
+      <div class="acts">
+        <button class="ghost" type="button" onclick="closePad()">닫기</button>
+        <button class="ghost" type="button" onclick="clearPad()">지우기</button>
+        <button class="save" type="button" onclick="acceptPad()">서명 완료</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    const ALIAS = { cert: "CERT_EMPLOYMENT", resign: "RESIGNATION", vacation: "VACATION_PLAN", expense: "EXPENSE_REQUEST" };
+    const qs = new URLSearchParams(location.search);
+    const DOC = ALIAS[qs.get("doc")] || qs.get("doc") || "CERT_EMPLOYMENT";
+    const VIEW_ID = qs.get("id");
+    const META = {
+      CERT_EMPLOYMENT: { title: "재직증명서", en: "CERTIFICATE OF EMPLOYMENT", body: "위 사람은 엑스테크 Axis Tech에 재직 중임을 증명합니다." },
+      RESIGNATION: { title: "사직서", en: "LETTER OF RESIGNATION", body: "아래 일자로 근로계약을 해지(사직)하고자 하오니 수리하여 주시기 바랍니다." },
+      VACATION_PLAN: { title: "휴가계획서", en: "ANNUAL LEAVE PLAN", body: "월별 사용 예정일을 기입하고, 분할 사용·시기 변경 사유를 적습니다." },
+      EXPENSE_REQUEST: { title: "지출품의서", en: "EXPENSE REQUEST", body: "세금계산서·카드전표·영수증 등 증빙을 첨부합니다." }
+    }[DOC] || { title: "서식", en: "AXIS TECH FORM", body: "" };
+    const SHOWS = {
+      CERT_EMPLOYMENT: ["rowRrn", "rowEmpType", "rowPurpose"],
+      RESIGNATION: ["rowRrn", "rowLastDay", "rowReason"],
+      VACATION_PLAN: ["rowRrn", "rowYear", "monthWrap"],
+      EXPENSE_REQUEST: ["rowDate", "rowAmount", "rowAccount", "rowPay"]
+    };
+    const NEED_RRN = DOC !== "EXPENSE_REQUEST";
+    document.title = "엑스테크 " + META.title;
+    topTitle.textContent = "엑스테크 " + META.title;
+    docTitle.textContent = META.title;
+    enTitle.textContent = META.en;
+    bodyLabel.textContent = META.title + " 내용";
+    bodyText.value = META.body;
+    const LEADS = {
+      CERT_EMPLOYMENT: '사용자 <b>엑스테크 Axis Tech</b> (대표이사 민현기)는 아래 사람이 재직 중임을 증명합니다.',
+      RESIGNATION: '신청인 <b id="leadName"></b> 은 사용자 <b>엑스테크 Axis Tech</b> (대표이사 민현기)에게 아래와 같이 사직을 신청합니다.',
+      VACATION_PLAN: '신청인 <b id="leadName"></b> 은 사용자 <b>엑스테크 Axis Tech</b> (대표이사 민현기)에게 아래와 같이 휴가계획을 제출합니다.',
+      EXPENSE_REQUEST: '신청인 <b id="leadName"></b> 은 사용자 <b>엑스테크 Axis Tech</b> (대표이사 민현기)에게 아래와 같이 지출을 품의합니다.'
+    };
+    leadText.innerHTML = LEADS[DOC] || LEADS.CERT_EMPLOYMENT;
+    const NEED_SIGN = DOC !== "CERT_EMPLOYMENT";
+    if (!NEED_SIGN) {
+      const applicant = document.getElementById("applicantSign");
+      const signBtn = document.getElementById("signBtn");
+      const signGrid = document.getElementById("signGrid");
+      const companyTitle = document.getElementById("companySignTitle");
+      const companyName = document.getElementById("companySignName");
+      const sheetEndLogo = document.getElementById("sheetEndLogo");
+      if (applicant) applicant.remove();
+      if (companyTitle) companyTitle.remove();
+      if (companyName) companyName.remove();
+      if (signGrid) signGrid.classList.add("company-only", "cert-stamp");
+      if (sheetEndLogo && signGrid && sheetEndLogo.firstElementChild) {
+        signGrid.insertBefore(sheetEndLogo.firstElementChild, signGrid.firstChild);
+        sheetEndLogo.remove();
+      }
+      if (signBtn) signBtn.style.display = "none";
+      status.textContent = "저장 가능";
+      status.classList.add("ok");
+    }
+    const showIds = SHOWS[DOC] || [];
+    ["rowRrn","rowEmpType","rowPurpose","rowLastDay","rowReason","rowYear","rowDate","rowAmount","rowAccount","rowPay","monthWrap"].forEach(function (id) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (showIds.indexOf(id) >= 0) {
+        el.hidden = false;
+        el.style.display = "";
+      } else {
+        el.remove();
+      }
+    });
+    const now = new Date();
+    const yearEl = document.getElementById("year");
+    const requestDateEl = document.getElementById("requestDate");
+    if (yearEl) yearEl.value = now.getFullYear();
+    if (requestDateEl) requestDateEl.value = now.toISOString().slice(0, 10);
+    hireDate.value = now.toISOString().slice(0, 10);
+    const monthGrid = document.getElementById("monthGrid");
+    if (monthGrid) {
+      for (let m = 1; m <= 12; m++) {
+        monthGrid.insertAdjacentHTML("beforeend", "<div><label>" + m + "월 사용예정</label><input id='m" + m + "' placeholder='일수 또는 일자' /></div>");
+      }
+    }
+    document.querySelectorAll(".lock-mark, .axis-logo, .sheet-wm, .seal").forEach(function (el) {
+      el.draggable = false;
+      el.setAttribute("draggable", "false");
+      el.addEventListener("dragstart", function (e) { e.preventDefault(); });
+    });
+    const sealImg = document.getElementById("corpSeal");
+    if (sealImg) {
+      const fileSrc = "seal-axis.png?v=20260908d";
+      function showSealFile() {
+        if ((sealImg.getAttribute("src") || "").indexOf("seal-axis.png") >= 0) return;
+        sealImg.src = fileSrc;
+      }
+      sealImg.addEventListener("error", showSealFile);
+      if (!sealImg.complete || !sealImg.naturalWidth) showSealFile();
+    }
+    if (lanHint.textContent.indexOf("__LAN_URL__") >= 0 || lanHint.textContent.indexOf("127.0.0.1") >= 0) {
+      fetch("/api/info").then(function (r) { return r.json(); }).then(function (info) {
+        if (info && info.url) lanHint.textContent = "휴대폰 저장: " + String(info.url).replace(/\/?$/, "/") + "axis-form.html?doc=" + DOC;
+      }).catch(function () {
+        lanHint.textContent = "휴대폰 저장: " + location.href;
+      });
+    }
+    let signature = "";
+    const canvas = document.getElementById("pad");
+    const ctx = canvas ? canvas.getContext("2d") : null;
+    let drawing = false;
+    function pos(e) {
+      if (!canvas) return { x: 0, y: 0 };
+      const r = canvas.getBoundingClientRect();
+      const t = e.touches ? e.touches[0] : e;
+      return { x: (t.clientX - r.left) * canvas.width / r.width, y: (t.clientY - r.top) * canvas.height / r.height };
+    }
+    function start(e) { if (!ctx) return; e.preventDefault(); drawing = true; const p = pos(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+    function move(e) {
+      if (!drawing || !ctx) return;
+      e.preventDefault();
+      const p = pos(e);
+      ctx.lineWidth = 2.4; ctx.lineCap = "round"; ctx.strokeStyle = "#111";
+      ctx.lineTo(p.x, p.y); ctx.stroke();
+    }
+    function end() { drawing = false; }
+    if (canvas) {
+      canvas.addEventListener("mousedown", start);
+      canvas.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", end);
+      canvas.addEventListener("touchstart", start, { passive: false });
+      canvas.addEventListener("touchmove", move, { passive: false });
+      canvas.addEventListener("touchend", end);
+    }
+    function formatRrn(value) {
+      const digits = String(value || "").replace(/\D/g, "").slice(0, 13);
+      return digits.length <= 6 ? digits : digits.slice(0, 6) + "-" + digits.slice(6);
+    }
+    function openIdCard() {
+      const rrnEl = document.getElementById("rrn");
+      if (!rrnEl) return;
+      idName.value = (name.value || name2.value || "").trim();
+      idRrn.value = formatRrn(rrnEl.value);
+      idModal.classList.add("on");
+      setTimeout(function () { idRrn.focus(); }, 50);
+    }
+    function closeIdCard() { idModal.classList.remove("on"); }
+    function acceptIdCard() {
+      const rrnEl = document.getElementById("rrn");
+      if (idName.value.trim()) { name.value = idName.value.trim(); syncLeadName(); }
+      if (rrnEl) rrnEl.value = formatRrn(idRrn.value);
+      closeIdCard();
+    }
+    idRrn.addEventListener("input", function () { idRrn.value = formatRrn(idRrn.value); });
+    const rrnEl = document.getElementById("rrn");
+    if (rrnEl) {
+      rrnEl.addEventListener("input", function () { rrnEl.value = formatRrn(rrnEl.value); });
+    }
+    function syncLeadName() {
+      name2.value = name.value;
+      const leadName = document.getElementById("leadName");
+      if (leadName) leadName.textContent = name.value.trim() || "신청인";
+    }
+    name.addEventListener("input", syncLeadName);
+    function openPad() { if (!NEED_SIGN) return; modal.classList.add("on"); }
+    function closePad() { modal.classList.remove("on"); }
+    function clearPad() { if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height); }
+    function setSignature(dataUrl) {
+      signature = String(dataUrl || "");
+      const box = document.getElementById("sigPreview");
+      if (!NEED_SIGN) {
+        status.textContent = "저장 가능"; status.classList.add("ok");
+        return;
+      }
+      if (!box) return;
+      if (!signature) {
+        box.textContent = "터치하여 서명";
+        status.textContent = "서명 필요"; status.classList.remove("ok");
+        return;
+      }
+      box.innerHTML = "";
+      const img = new Image();
+      img.src = signature;
+      img.draggable = false;
+      img.style.maxWidth = "100%";
+      img.style.height = "88px";
+      box.appendChild(img);
+      status.textContent = "서명 완료";
+      status.classList.add("ok");
+    }
+    function acceptPad() { setSignature(canvas.toDataURL("image/png")); closePad(); }
+    function show(kind, text) { flash.className = "msg " + kind; flash.textContent = text; }
+    function monthMap() {
+      const out = {};
+      for (let m = 1; m <= 12; m++) {
+        const el = document.getElementById("m" + m);
+        if (el) out[String(m)] = el.value.trim();
+      }
+      return out;
+    }
+    function setField(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.value = value;
+    }
+    function resetForm() {
+      name.value = ""; name2.value = ""; setField("rrn", "");
+      setField("department", "");
+      setField("jobTitle", "");
+      setField("address", "");
+      setField("headerAddress", "충남 천안시 서북구 입장면 연곡로");
+      setField("empType", "정규직");
+      setField("purpose", "제출용");
+      setField("reason", "");
+      setField("lastWork", "");
+      setField("amount", "");
+      setField("account", "");
+      setField("payMethod", "계좌이체");
+      setField("vat", "별도");
+      bodyText.value = META.body;
+      for (let m = 1; m <= 12; m++) {
+        const el = document.getElementById("m" + m);
+        if (el) el.value = "";
+      }
+      syncLeadName();
+      setSignature(""); clearPad(); flash.className = "msg";
+    }
+    function field(id) {
+      const el = document.getElementById(id);
+      return el ? String(el.value || "").trim() : "";
+    }
+    function mesApi(path) {
+      const lan = new URLSearchParams(location.search).get("lan");
+      if (lan) {
+        try {
+          return String(lan).replace(/\/?$/, "") + path;
+        } catch (err) { /* origin 사용 */ }
+      }
+      return location.origin + path;
+    }
+    async function saveForm() {
+      const who = (name.value || name2.value).trim();
+      if (!who) { show("err", "성명을 입력하세요."); return; }
+      if (NEED_RRN && !field("rrn")) { show("err", "주민등록번호를 입력하세요."); return; }
+      if (NEED_SIGN && !signature) { show("err", "서명을 먼저 완료하세요."); return; }
+      const filename = exportFileName(META.title, who);
+      const saveBtn = document.querySelector(".foot button.save");
+      if (saveBtn) saveBtn.disabled = true;
+      show("ok", "MES에 저장하는 중...");
+      try {
+        const captured = await captureSheetPdf(document.getElementById("sheet"), filename);
+        const res = await fetch(mesApi("/api/save-form"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(Object.assign({
+            doc_type: DOC,
+            name: who,
+            rrn: field("rrn"),
+            department: field("department"),
+            job_title: field("jobTitle"),
+            address: field("address"),
+            company_address: field("headerAddress"),
+            hire_date: field("hireDate"),
+            employment_type: field("empType") || "정규직",
+            purpose: field("purpose") || field("reason") || bodyText.value.trim(),
+            reason: field("reason") || field("purpose") || bodyText.value.trim(),
+            last_work_date: field("lastWork"),
+            year: Number(field("year") || new Date().getFullYear()),
+            plan_text: bodyText.value.trim(),
+            months: monthMap(),
+            request_date: field("requestDate"),
+            amount: field("amount"),
+            account_name: field("account"),
+            vat: field("vat") || "별도",
+            pay_method: field("payMethod") || "계좌이체",
+            remark: bodyText.value.trim(),
+            signature: NEED_SIGN ? signature : "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+          }, exportPayloadFields(captured)))
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "저장에 실패했습니다.");
+        try { await downloadCaptured(captured); } catch (dlErr) { /* 아래 링크로 받음 */ }
+        showDownloadLink(flash, captured, META.title + "를 PC MES 총무/서식에 저장했습니다.");
+      } catch (err) {
+        show("err", (err && err.message ? err.message : "저장에 실패했습니다.") + " MES PC와 같은 Wi-Fi에서 LAN 주소로 이 화면을 열어 저장하세요.");
+      } finally {
+        if (saveBtn) saveBtn.disabled = false;
+      }
+    }
+    async function loadSaved() {
+      if (!VIEW_ID) return;
+      try {
+        const res = await fetch("/api/contract?id=" + encodeURIComponent(VIEW_ID), { cache: "no-store" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "문서를 찾지 못했습니다.");
+        if (data.name) { name.value = data.name; name2.value = data.name; }
+        if (data.rrn) setField("rrn", formatRrn(data.rrn));
+        if (data.department) setField("department", data.department);
+        if (data.job_title) setField("jobTitle", data.job_title);
+        if (data.company_address) setField("headerAddress", data.company_address);
+        if (data.address || data.form_address || data.worker_address) {
+          setField("address", data.form_address || data.worker_address || data.address);
+        }
+        if (data.hire_date) setField("hireDate", String(data.hire_date).slice(0, 10));
+        if (data.employment_type) setField("empType", data.employment_type);
+        if (data.purpose) setField("purpose", data.purpose);
+        if (data.reason) setField("reason", data.reason);
+        if (data.last_work_date) setField("lastWork", String(data.last_work_date).slice(0, 10));
+        if (data.year) setField("year", data.year);
+        if (data.plan_text) bodyText.value = data.plan_text;
+        if (data.remark && DOC === "EXPENSE_REQUEST") bodyText.value = data.remark;
+        if (data.request_date) setField("requestDate", String(data.request_date).slice(0, 10));
+        if (data.amount) setField("amount", data.amount);
+        if (data.account_name) setField("account", data.account_name);
+        if (data.vat) setField("vat", data.vat);
+        if (data.pay_method) setField("payMethod", data.pay_method);
+        const months = data.months || {};
+        for (let m = 1; m <= 12; m++) {
+          const v = months[String(m)] || months[m] || "";
+          if (v) document.getElementById("m" + m).value = v;
+        }
+        if (data.signature) setSignature(data.signature);
+      } catch (err) {
+        show("err", "저장된 문서를 열지 못했습니다. MES를 다시 실행한 뒤 같은 Wi-Fi에서 열어주세요.");
+      }
+    }
+    loadSaved();
+  </script>
+</body>
+</html>
