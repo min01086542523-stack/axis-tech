@@ -1887,6 +1887,9 @@ def fetch_all_bom() -> list[sqlite3.Row]:
         return conn.execute(
             """
             SELECT
+                b.id,
+                b.finished_product_id,
+                b.material_id,
                 fp.product_code AS fg_code,
                 fp.product_name AS fg_name,
                 mp.product_code AS rm_code,

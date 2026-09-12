@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 import auth
+import dashboard_data
 
 ROLE_LABELS = [label for _key, label in auth.ROLE_CHOICES]
 ROLE_BY_LABEL = {label: key for key, label in auth.ROLE_CHOICES}
@@ -17,6 +18,13 @@ def _role_key(label: str) -> str:
     if label == "대표이사":
         return auth.ROLE_SUPER_ADMIN
     return ROLE_BY_LABEL.get(label, auth.ROLE_PRODUCTION)
+
+
+def _sync_cloud() -> None:
+    try:
+        dashboard_data.sync_to_cloud()
+    except Exception:
+        pass
 
 
 def _users_df() -> pd.DataFrame:
@@ -80,6 +88,7 @@ def render_accounts_page(user: dict[str, Any]) -> None:
     if create:
         try:
             auth.create_user(uid, pw, name, dept, _role_key(role_label), title, actor_id=actor_id)
+            _sync_cloud()
             st.success("계정을 등록했습니다.")
             st.toast("계정 등록 완료")
             st.rerun()
@@ -107,6 +116,7 @@ def render_accounts_page(user: dict[str, Any]) -> None:
                     st.success(f"계정을 수정했습니다. 아이디: {old_id} → {next_id}")
                 else:
                     st.success("계정을 수정했습니다.")
+                _sync_cloud()
                 st.toast("계정 수정 완료")
                 st.rerun()
             except auth.AuthError as exc:
@@ -128,6 +138,7 @@ def render_accounts_page(user: dict[str, Any]) -> None:
             try:
                 auth.delete_user(pending, actor_id)
                 st.session_state.pop("acc_delete_pending", None)
+                _sync_cloud()
                 st.success("계정을 삭제했습니다.")
                 st.toast("계정 삭제 완료")
                 st.rerun()
